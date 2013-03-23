@@ -66,7 +66,7 @@ enum {
 	kCmdGlobalGraphicsOverride = 'OGFX',
 	kCmdGlobalAudioOverride = 'OSFX',
 	kCmdGlobalMIDIOverride = 'OMID',
-	kCmdGlobalMT32Override = 'OM32',
+	kCmdGlobalAdLibOverride = 'OADL',
 	kCmdGlobalVolumeOverride = 'OVOL',
 
 	kCmdChooseSoundFontCmd = 'chsf',
@@ -143,7 +143,7 @@ protected:
 	CheckboxWidget *_globalGraphicsOverride;
 	CheckboxWidget *_globalAudioOverride;
 	CheckboxWidget *_globalMIDIOverride;
-	CheckboxWidget *_globalMT32Override;
+	CheckboxWidget *_globalAdLibOverride;
 	CheckboxWidget *_globalVolumeOverride;
 
 	ExtraGuiOptions _engineOptions;
@@ -288,17 +288,17 @@ EditGameDialog::EditGameDialog(const String &domain, const String &desc)
 	}
 
 	//
-	// 7) The MT-32 tab
+	// 7) The AdLib tab
 	//
 	if (!_guioptions.contains(GUIO_NOMIDI)) {
-		tab->addTab(_("MT-32"));
+		tab->addTab(_("AdLib"));
 
 		if (g_system->getOverlayWidth() > 320)
-			_globalMT32Override = new CheckboxWidget(tab, "GameOptions_MT32.EnableTabCheckbox", _("Override global MT-32 settings"), 0, kCmdGlobalMT32Override);
+			_globalAdLibOverride = new CheckboxWidget(tab, "GameOptions_AdLib.EnableTabCheckbox", _("Override global AdLib settings"), 0, kCmdGlobalAdLibOverride);
 		else
-			_globalMT32Override = new CheckboxWidget(tab, "GameOptions_MT32.EnableTabCheckbox", _c("Override global MT-32 settings", "lowres"), 0, kCmdGlobalMT32Override);
+			_globalAdLibOverride = new CheckboxWidget(tab, "GameOptions_AdLib.EnableTabCheckbox", _c("Override global AdLib settings", "lowres"), 0, kCmdGlobalAdLibOverride);
 
-		addMT32Controls(tab, "GameOptions_MT32.");
+		addAdLibControls(tab, "GameOptions_AdLib.");
 	}
 
 	//
@@ -372,7 +372,6 @@ void EditGameDialog::open() {
 
 	e = ConfMan.hasKey("music_driver", _domain) ||
 		ConfMan.hasKey("output_rate", _domain) ||
-		ConfMan.hasKey("opl_driver", _domain) ||
 		ConfMan.hasKey("subtitles", _domain) ||
 		ConfMan.hasKey("talkspeed", _domain);
 	_globalAudioOverride->setState(e);
@@ -383,16 +382,17 @@ void EditGameDialog::open() {
 	_globalVolumeOverride->setState(e);
 
 	if (!_guioptions.contains(GUIO_NOMIDI)) {
-		e = ConfMan.hasKey("soundfont", _domain) ||
-			ConfMan.hasKey("multi_midi", _domain) ||
+		e = ConfMan.hasKey("soundfont", _domain) ||		
+			ConfMan.hasKey("native_mt32", _domain) ||
+			ConfMan.hasKey("enable_gs", _domain) ||
 			ConfMan.hasKey("midi_gain", _domain);
 		_globalMIDIOverride->setState(e);
 	}
 
 	if (!_guioptions.contains(GUIO_NOMIDI)) {
-		e = ConfMan.hasKey("native_mt32", _domain) ||
-			ConfMan.hasKey("enable_gs", _domain);
-		_globalMT32Override->setState(e);
+		e = 	ConfMan.hasKey("opl_driver", _domain) ||
+			ConfMan.hasKey("multi_midi", _domain);
+		_globalAdLibOverride->setState(e);
 	}
 
 	// TODO: game path
@@ -492,8 +492,8 @@ void EditGameDialog::handleCommand(CommandSender *sender, uint32 cmd, uint32 dat
 		setMIDISettingsState(data != 0);
 		draw();
 		break;
-	case kCmdGlobalMT32Override:
-		setMT32SettingsState(data != 0);
+	case kCmdGlobalAdLibOverride:
+		setAdLibSettingsState(data != 0);
 		draw();
 		break;
 	case kCmdGlobalVolumeOverride:

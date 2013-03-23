@@ -19,1416 +19,492 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  */
 
+#include "base/version.h"
+
+#include "common/config-manager.h"
+#include "common/events.h"
+#include "common/fs.h"
+#include "common/gui_options.h"
+#include "common/util.h"
+#include "common/system.h"
+#include "common/translation.h"
+
+#include "gui/about.h"
 #include "gui/browser.h"
-#include "gui/themebrowser.h"
+#include "gui/chooser.h"
+#include "gui/launcher.h"
+#include "gui/massadd.h"
 #include "gui/message.h"
 #include "gui/gui-manager.h"
 #include "gui/options.h"
-#include "gui/widgets/popup.h"
+#include "gui/saveload.h"
+#include "gui/widgets/edittext.h"
+#include "gui/widgets/list.h"
 #include "gui/widgets/tab.h"
+#include "gui/widgets/popup.h"
 #include "gui/ThemeEval.h"
 
-#include "common/fs.h"
-#include "common/config-manager.h"
-#include "common/gui_options.h"
-#include "common/rendermode.h"
-#include "common/system.h"
-#include "common/textconsole.h"
-#include "common/translation.h"
+#include "graphics/cursorman.h"
 
-#include "audio/mididrv.h"
-#include "audio/musicplugin.h"
-#include "audio/mixer.h"
-#include "audio/fmopl.h"
+using Common::ConfigManager;
 
 namespace GUI {
 
 enum {
-	kMidiGainChanged		= 'mgch',
-	kMusicVolumeChanged		= 'muvc',
-	kSfxVolumeChanged		= 'sfvc',
-	kMuteAllChanged			= 'mute',
-	kSubtitleToggle			= 'sttg',
-	kSubtitleSpeedChanged	= 'stsc',
-	kSpeechVolumeChanged	= 'vcvc',
-	kChooseSoundFontCmd		= 'chsf',
-	kClearSoundFontCmd      = 'clsf',
-	kChooseSaveDirCmd		= 'chos',
-	kSavePathClearCmd		= 'clsp',
-	kChooseThemeDirCmd		= 'chth',
-	kThemePathClearCmd		= 'clth',
-	kChooseExtraDirCmd		= 'chex',
-	kExtraPathClearCmd		= 'clex',
-	kChoosePluginsDirCmd	= 'chpl',
-	kChooseThemeCmd			= 'chtf'
+	kStartCmd = 'STRT',
+	kAboutCmd = 'ABOU',
+	kOptionsCmd = 'OPTN',
+	kAddGameCmd = 'ADDG',
+	kEditGameCmd = 'EDTG',
+	kRemoveGameCmd = 'REMG',
+	kLoadGameCmd = 'LOAD',
+	kQuitCmd = 'QUIT',
+	kSearchCmd = 'SRCH',
+	kListSearchCmd = 'LSSR',
+	kSearchClearCmd = 'SRCL',
+
+	kCmdGlobalGraphicsOverride = 'OGFX',
+	kCmdGlobalAudioOverride = 'OSFX',
+	kCmdGlobalMIDIOverride = 'OMID',
+	kCmdGlobalAdLibOverride = 'OADL',
+	kCmdGlobalVolumeOverride = 'OVOL',
+
+	kCmdChooseSoundFontCmd = 'chsf',
+
+	kCmdExtraBrowser = 'PEXT',
+	kCmdExtraPathClear = 'PEXC',
+	kCmdGameBrowser = 'PGME',
+	kCmdSaveBrowser = 'PSAV',
+	kCmdSavePathClear = 'PSAC'
 };
 
-enum {
-	kSubtitlesSpeech,
-	kSubtitlesSubs,
-	kSubtitlesBoth
+/*
+ * TODO: Clean up this ugly design: we subclass EditTextWidget to perform
+ * input validation. It would be much more elegant to use a decorator pattern,
+ * or a validation callback, or something like that.
+ */
+class DomainEditTextWidget : public EditTextWidget {
+public:
+	DomainEditTextWidget(GuiObject *boss, const String &name, const String &text, const char *tooltip = 0)
+		: EditTextWidget(boss, name, text, tooltip) {
+	}
+
+protected:
+	bool tryInsertChar(byte c, int pos) {
+		if (Common::isAlnum(c) || c == '-' || c == '_') {
+			_editString.insertChar(c, pos);
+			return true;
+		}
+		return false;
+	}
 };
 
-#ifdef SMALL_SCREEN_DEVICE
-enum {
-	kChooseKeyMappingCmd    = 'chma'
+/*
+ * A dialog that allows the user to edit a config game entry.
+ * TODO: add widgets for some/all of the following
+ * - Maybe scaler/graphics mode. But there are two problems:
+ *   1) Different backends can have different scalers with different names,
+ *      so we first have to add a way to query those... no Ender, I don't
+ *      think a bitmasked property() value is nice for this,  because we would
+ *      have to add to the bitmask values whenever a backends adds a new scaler).
+ *   2) At the time the launcher is running, the GFX backend is already setup.
+ *      So when a game is run via the launcher, the custom scaler setting for it won't be
+ *      used. So we'd also have to add an API to change the scaler during runtime
+ *      (the SDL backend can already do that based on user input, but there is no API
+ *      to achieve it)
+ *   If the APIs for 1&2 are in place, we can think about adding this to the Edit&Option dialogs
+ */
+
+class EditGameDialog : public OptionsDialog {
+	typedef Common::String String;
+	typedef Common::Array<Common::String> StringArray;
+public:
+	EditGameDialog(const String &domain, const String &desc);
+
+	void open();
+	void close();
+	virtual void handleCommand(CommandSender *sender, uint32 cmd, uint32 data);
+
+protected:
+	EditTextWidget *_descriptionWidget;
+	DomainEditTextWidget *_domainWidget;
+
+	StaticTextWidget *_gamePathWidget;
+	StaticTextWidget *_extraPathWidget;
+	StaticTextWidget *_savePathWidget;
+	ButtonWidget *_extraPathClearButton;
+	ButtonWidget *_savePathClearButton;
+
+	StaticTextWidget *_langPopUpDesc;
+	PopUpWidget *_langPopUp;
+	StaticTextWidget *_platformPopUpDesc;
+	PopUpWidget *_platformPopUp;
+
+	CheckboxWidget *_globalGraphicsOverride;
+	CheckboxWidget *_globalAudioOverride;
+	CheckboxWidget *_globalMIDIOverride;
+	CheckboxWidget *_globalAdLibOverride;
+	CheckboxWidget *_globalVolumeOverride;
+
+	ExtraGuiOptions _engineOptions;
 };
-#endif
 
-#ifdef USE_FLUIDSYNTH
-enum {
-	kFluidSynthSettingsCmd		= 'flst'
-};
-#endif
-
-static const char *savePeriodLabels[] = { _s("Never"), _s("every 5 mins"), _s("every 10 mins"), _s("every 15 mins"), _s("every 30 mins"), 0 };
-static const int savePeriodValues[] = { 0, 5 * 60, 10 * 60, 15 * 60, 30 * 60, -1 };
-static const char *outputRateLabels[] = { _s("<default>"), _s("8 kHz"), _s("11kHz"), _s("22 kHz"), _s("44 kHz"), _s("48 kHz"), 0 };
-static const int outputRateValues[] = { 0, 8000, 11025, 22050, 44100, 48000, -1 };
-
-OptionsDialog::OptionsDialog(const Common::String &domain, int x, int y, int w, int h)
-	: Dialog(x, y, w, h), _domain(domain), _graphicsTabId(-1), _midiTabId(-1), _pathsTabId(-1), _tabWidget(0) {
-	init();
-}
-
-OptionsDialog::OptionsDialog(const Common::String &domain, const Common::String &name)
-	: Dialog(name), _domain(domain), _graphicsTabId(-1), _tabWidget(0) {
-	init();
-}
-
-OptionsDialog::~OptionsDialog() {
-	delete _subToggleGroup;
-}
-
-void OptionsDialog::init() {
-	_enableGraphicSettings = false;
-	_gfxPopUp = 0;
-	_gfxPopUpDesc = 0;
-	_renderModePopUp = 0;
-	_renderModePopUpDesc = 0;
-	_fullscreenCheckbox = 0;
-	_aspectCheckbox = 0;
-	_enableAudioSettings = false;
-	_midiPopUp = 0;
-	_midiPopUpDesc = 0;
-	_oplPopUp = 0;
-	_oplPopUpDesc = 0;
-	_outputRatePopUp = 0;
-	_outputRatePopUpDesc = 0;
-	_enableMIDISettings = false;
-	_gmDevicePopUp = 0;
-	_gmDevicePopUpDesc = 0;
-	_soundFont = 0;
-	_soundFontButton = 0;
-	_soundFontClearButton = 0;
-	_multiMidiCheckbox = 0;
-	_midiGainDesc = 0;
-	_midiGainSlider = 0;
-	_midiGainLabel = 0;
-	_enableMT32Settings = false;
-	_mt32DevicePopUp = 0;
-	_mt32DevicePopUpDesc = 0;
-	_enableGSCheckbox = 0;
-	_enableVolumeSettings = false;
-	_musicVolumeDesc = 0;
-	_musicVolumeSlider = 0;
-	_musicVolumeLabel = 0;
-	_sfxVolumeDesc = 0;
-	_sfxVolumeSlider = 0;
-	_sfxVolumeLabel = 0;
-	_speechVolumeDesc = 0;
-	_speechVolumeSlider = 0;
-	_speechVolumeLabel = 0;
-	_muteCheckbox = 0;
-	_subToggleDesc = 0;
-	_subToggleGroup = 0;
-	_subToggleSubOnly = 0;
-	_subToggleSpeechOnly = 0;
-	_subToggleSubBoth = 0;
-	_subSpeedDesc = 0;
-	_subSpeedSlider = 0;
-	_subSpeedLabel = 0;
-	_oldTheme = g_gui.theme()->getThemeId();
-
-	// Retrieve game GUI options
-	_guioptions.clear();
-	if (ConfMan.hasKey("guioptions", _domain)) {
-		_guioptionsString = ConfMan.get("guioptions", _domain);
-		_guioptions = parseGameGUIOptions(_guioptionsString);
-	}
-}
-
-void OptionsDialog::open() {
-	Dialog::open();
-
-	// Reset result value
-	setResult(0);
-
-	// Retrieve game GUI options
-	_guioptions.clear();
-	if (ConfMan.hasKey("guioptions", _domain)) {
-		_guioptionsString = ConfMan.get("guioptions", _domain);
-		_guioptions = parseGameGUIOptions(_guioptionsString);
-	}
-
-	// Graphic options
-	if (_fullscreenCheckbox) {
-		_gfxPopUp->setSelected(0);
-
-		if (ConfMan.hasKey("gfx_mode", _domain)) {
-			const OSystem::GraphicsMode *gm = g_system->getSupportedGraphicsModes();
-			Common::String gfxMode(ConfMan.get("gfx_mode", _domain));
-			int gfxCount = 1;
-			while (gm->name) {
-				gfxCount++;
-
-				if (scumm_stricmp(gm->name, gfxMode.c_str()) == 0)
-					_gfxPopUp->setSelected(gfxCount);
-
-				gm++;
-			}
-		}
-
-		_renderModePopUp->setSelected(0);
-
-		if (ConfMan.hasKey("render_mode", _domain)) {
-			const Common::RenderModeDescription *p = Common::g_renderModes;
-			const Common::RenderMode renderMode = Common::parseRenderMode(ConfMan.get("render_mode", _domain));
-			int sel = 0;
-			for (int i = 0; p->code; ++p, ++i) {
-				if (renderMode == p->id)
-					sel = p->id;
-			}
-			_renderModePopUp->setSelectedTag(sel);
-		}
-
-#ifdef SMALL_SCREEN_DEVICE
-		_fullscreenCheckbox->setState(true);
-		_fullscreenCheckbox->setEnabled(false);
-		_aspectCheckbox->setState(false);
-		_aspectCheckbox->setEnabled(false);
-#else // !SMALL_SCREEN_DEVICE
-		// Fullscreen setting
-		_fullscreenCheckbox->setState(ConfMan.getBool("fullscreen", _domain));
-
-		// Aspect ratio setting
-		if (_guioptions.contains(GUIO_NOASPECT)) {
-			_aspectCheckbox->setState(false);
-			_aspectCheckbox->setEnabled(false);
-		} else {
-			_aspectCheckbox->setEnabled(true);
-			_aspectCheckbox->setState(ConfMan.getBool("aspect_ratio", _domain));
-		}
-#endif // SMALL_SCREEN_DEVICE
-
-	}
-
-	// Audio options
-	if (!loadMusicDeviceSetting(_midiPopUp, "music_driver"))
-		_midiPopUp->setSelected(0);
-
-	if (_oplPopUp) {
-		OPL::Config::DriverId id = MAX<OPL::Config::DriverId>(OPL::Config::parse(ConfMan.get("opl_driver", _domain)), 0);
-		_oplPopUp->setSelectedTag(id);
-	}
-
-	if (_outputRatePopUp) {
-		_outputRatePopUp->setSelected(1);
-		int value = ConfMan.getInt("output_rate", _domain);
-		for	(int i = 0; outputRateLabels[i]; i++) {
-			if (value == outputRateValues[i])
-				_outputRatePopUp->setSelected(i);
-		}
-	}
-
-	if (_multiMidiCheckbox) {
-		if (!loadMusicDeviceSetting(_gmDevicePopUp, "gm_device"))
-			_gmDevicePopUp->setSelected(0);
-
-		// Multi midi setting
-		_multiMidiCheckbox->setState(ConfMan.getBool("multi_midi", _domain));
-
-		Common::String soundFont(ConfMan.get("soundfont", _domain));
-		if (soundFont.empty() || !ConfMan.hasKey("soundfont", _domain)) {
-			_soundFont->setLabel(_c("None", "soundfont"));
-			_soundFontClearButton->setEnabled(false);
-		} else {
-			_soundFont->setLabel(soundFont);
-			_soundFontClearButton->setEnabled(true);
-		}
-
-		// MIDI gain setting
-		_midiGainSlider->setValue(ConfMan.getInt("midi_gain", _domain));
-		_midiGainLabel->setLabel(Common::String::format("%.2f", (double)_midiGainSlider->getValue() / 100.0));
-	}
-
-	// MT-32 options
-	if (_mt32DevicePopUp) {
-		if (!loadMusicDeviceSetting(_mt32DevicePopUp, "mt32_device"))
-			_mt32DevicePopUp->setSelected(0);
-		
-		// GS extensions setting
-		_enableGSCheckbox->setState(ConfMan.getBool("enable_gs", _domain));
-	}
-
-	// Volume options
-	if (_musicVolumeSlider) {
-		int vol;
-
-		vol = ConfMan.getInt("music_volume", _domain);
-		_musicVolumeSlider->setValue(vol);
-		_musicVolumeLabel->setValue(vol);
-
-		vol = ConfMan.getInt("sfx_volume", _domain);
-		_sfxVolumeSlider->setValue(vol);
-		_sfxVolumeLabel->setValue(vol);
-
-		vol = ConfMan.getInt("speech_volume", _domain);
-		_speechVolumeSlider->setValue(vol);
-		_speechVolumeLabel->setValue(vol);
-
-		bool val = false;
-		if (ConfMan.hasKey("mute", _domain)) {
-			val = ConfMan.getBool("mute", _domain);
-		} else {
-			ConfMan.setBool("mute", false);
-		}
-		_muteCheckbox->setState(val);
-	}
-
-	// Subtitle options
-	if (_subToggleGroup) {
-		int speed;
-		int sliderMaxValue = _subSpeedSlider->getMaxValue();
-
-		int subMode = getSubtitleMode(ConfMan.getBool("subtitles", _domain), ConfMan.getBool("speech_mute", _domain));
-		_subToggleGroup->setValue(subMode);
-
-		// Engines that reuse the subtitle speed widget set their own max value.
-		// Scale the config value accordingly (see addSubtitleControls)
-		speed = (ConfMan.getInt("talkspeed", _domain) * sliderMaxValue + 255 / 2) / 255;
-		_subSpeedSlider->setValue(speed);
-		_subSpeedLabel->setValue(speed);
-	}
-}
-
-void OptionsDialog::close() {
-	if (getResult()) {
-
-		// Graphic options
-		bool graphicsModeChanged = false;
-		if (_fullscreenCheckbox) {
-			if (_enableGraphicSettings) {
-				if (ConfMan.getBool("fullscreen", _domain) != _fullscreenCheckbox->getState())
-					graphicsModeChanged = true;
-				if (ConfMan.getBool("aspect_ratio", _domain) != _aspectCheckbox->getState())
-					graphicsModeChanged = true;
-
-				ConfMan.setBool("fullscreen", _fullscreenCheckbox->getState(), _domain);
-				ConfMan.setBool("aspect_ratio", _aspectCheckbox->getState(), _domain);
-
-				bool isSet = false;
-
-				if ((int32)_gfxPopUp->getSelectedTag() >= 0) {
-					const OSystem::GraphicsMode *gm = g_system->getSupportedGraphicsModes();
-
-					while (gm->name) {
-						if (gm->id == (int)_gfxPopUp->getSelectedTag()) {
-							if (ConfMan.get("gfx_mode", _domain) != gm->name)
-								graphicsModeChanged = true;
-							ConfMan.set("gfx_mode", gm->name, _domain);
-							isSet = true;
-							break;
-						}
-						gm++;
-					}
-				}
-				if (!isSet)
-					ConfMan.removeKey("gfx_mode", _domain);
-
-				if ((int32)_renderModePopUp->getSelectedTag() >= 0)
-					ConfMan.set("render_mode", Common::getRenderModeCode((Common::RenderMode)_renderModePopUp->getSelectedTag()), _domain);
-			} else {
-				ConfMan.removeKey("fullscreen", _domain);
-				ConfMan.removeKey("aspect_ratio", _domain);
-				ConfMan.removeKey("gfx_mode", _domain);
-				ConfMan.removeKey("render_mode", _domain);
-			}
-		}
-
-		// Setup graphics again if needed
-		if (_domain == Common::ConfigManager::kApplicationDomain && graphicsModeChanged) {
-			g_system->beginGFXTransaction();
-			g_system->setGraphicsMode(ConfMan.get("gfx_mode", _domain).c_str());
-
-			if (ConfMan.hasKey("aspect_ratio"))
-				g_system->setFeatureState(OSystem::kFeatureAspectRatioCorrection, ConfMan.getBool("aspect_ratio", _domain));
-			if (ConfMan.hasKey("fullscreen"))
-				g_system->setFeatureState(OSystem::kFeatureFullscreenMode, ConfMan.getBool("fullscreen", _domain));
-			OSystem::TransactionError gfxError = g_system->endGFXTransaction();
-
-			// Since this might change the screen resolution we need to give
-			// the GUI a chance to update it's internal state. Otherwise we might
-			// get a crash when the GUI tries to grab the overlay.
-			//
-			// This fixes bug #3303501 "Switching from HQ2x->HQ3x crashes ScummVM"
-			//
-			// It is important that this is called *before* any of the current
-			// dialog's widgets are destroyed (for example before
-			// Dialog::close) is called, to prevent crashes caused by invalid
-			// widgets being referenced or similar errors.
-			g_gui.checkScreenChange();
-
-			if (gfxError != OSystem::kTransactionSuccess) {
-				// Revert ConfMan to what OSystem is using.
-				Common::String message = _("Failed to apply some of the graphic options changes:");
-
-				if (gfxError & OSystem::kTransactionModeSwitchFailed) {
-					const OSystem::GraphicsMode *gm = g_system->getSupportedGraphicsModes();
-					while (gm->name) {
-						if (gm->id == g_system->getGraphicsMode()) {
-							ConfMan.set("gfx_mode", gm->name, _domain);
-							break;
-						}
-						gm++;
-					}
-					message += "\n";
-					message += _("the video mode could not be changed.");
-				}
-
-				if (gfxError & OSystem::kTransactionAspectRatioFailed) {
-					ConfMan.setBool("aspect_ratio", g_system->getFeatureState(OSystem::kFeatureAspectRatioCorrection), _domain);
-					message += "\n";
-					message += _("the fullscreen setting could not be changed");
-				}
-
-				if (gfxError & OSystem::kTransactionFullscreenFailed) {
-					ConfMan.setBool("fullscreen", g_system->getFeatureState(OSystem::kFeatureFullscreenMode), _domain);
-					message += "\n";
-					message += _("the aspect ratio setting could not be changed");
-				}
-
-				// And display the error
-				GUI::MessageDialog dialog(message);
-				dialog.runModal();
-			}
-		}
-
-		// Volume options
-		if (_musicVolumeSlider) {
-			if (_enableVolumeSettings) {
-				ConfMan.setInt("music_volume", _musicVolumeSlider->getValue(), _domain);
-				ConfMan.setInt("sfx_volume", _sfxVolumeSlider->getValue(), _domain);
-				ConfMan.setInt("speech_volume", _speechVolumeSlider->getValue(), _domain);
-				ConfMan.setBool("mute", _muteCheckbox->getState(), _domain);
-			} else {
-				ConfMan.removeKey("music_volume", _domain);
-				ConfMan.removeKey("sfx_volume", _domain);
-				ConfMan.removeKey("speech_volume", _domain);
-				ConfMan.removeKey("mute", _domain);
-			}
-		}
-
-		// Audio options
-		if (_midiPopUp) {
-			if (_enableAudioSettings) {
-				saveMusicDeviceSetting(_midiPopUp, "music_driver");
-			} else {
-				ConfMan.removeKey("music_driver", _domain);
-			}
-		}
-
-		if (_oplPopUp) {
-			if (_enableAudioSettings) {
-				const OPL::Config::EmulatorDescription *ed = OPL::Config::getAvailable();
-				while (ed->name && ed->id != (int)_oplPopUp->getSelectedTag())
-					++ed;
-
-				if (ed->name)
-					ConfMan.set("opl_driver", ed->name, _domain);
-				else
-					ConfMan.removeKey("opl_driver", _domain);
-			} else {
-				ConfMan.removeKey("opl_driver", _domain);
-			}
-		}
-
-		if (_outputRatePopUp) {
-			if (_enableAudioSettings) {
-				if (_outputRatePopUp->getSelectedTag() != 0)
-					ConfMan.setInt("output_rate", _outputRatePopUp->getSelectedTag(), _domain);
-				else
-					ConfMan.removeKey("output_rate", _domain);
-			} else {
-				ConfMan.removeKey("output_rate", _domain);
-			}
-		}
-
-		// MIDI options
-		if (_multiMidiCheckbox) {
-			if (_enableMIDISettings) {
-				saveMusicDeviceSetting(_gmDevicePopUp, "gm_device");
-
-				ConfMan.setBool("multi_midi", _multiMidiCheckbox->getState(), _domain);
-				ConfMan.setInt("midi_gain", _midiGainSlider->getValue(), _domain);
-
-				Common::String soundFont(_soundFont->getLabel());
-				if (!soundFont.empty() && (soundFont != _c("None", "soundfont")))
-					ConfMan.set("soundfont", soundFont, _domain);
-				else
-					ConfMan.removeKey("soundfont", _domain);
-			} else {
-				ConfMan.removeKey("gm_device", _domain);
-				ConfMan.removeKey("multi_midi", _domain);
-				ConfMan.removeKey("midi_gain", _domain);
-				ConfMan.removeKey("soundfont", _domain);
-			}
-		}
-
-		// MT-32 options
-		if (_mt32DevicePopUp) {
-			if (_enableMT32Settings) {
-				saveMusicDeviceSetting(_mt32DevicePopUp, "mt32_device");
-				
-				if (_mt32DevicePopUp->getSelectedTag() = 0)
-					ConfMan.setBool("native_mt32", false, _domain);
-				else
-					ConfMan.setBool("native_mt32", true, _domain);
-					
-				ConfMan.setBool("enable_gs", _enableGSCheckbox->getState(), _domain);
-			} else {
-				ConfMan.removeKey("mt32_device", _domain);
-				ConfMan.removeKey("native_mt32", _domain);
-				ConfMan.removeKey("enable_gs", _domain);
-			}
-		}
-
-		// Subtitle options
-		if (_subToggleGroup) {
-			if (_enableSubtitleSettings) {
-				bool subtitles, speech_mute;
-				int talkspeed;
-				int sliderMaxValue = _subSpeedSlider->getMaxValue();
-
-				switch (_subToggleGroup->getValue()) {
-				case kSubtitlesSpeech:
-					subtitles = speech_mute = false;
-					break;
-				case kSubtitlesBoth:
-					subtitles = true;
-					speech_mute = false;
-					break;
-				case kSubtitlesSubs:
-				default:
-					subtitles = speech_mute = true;
-					break;
-				}
-
-				ConfMan.setBool("subtitles", subtitles, _domain);
-				ConfMan.setBool("speech_mute", speech_mute, _domain);
-
-				// Engines that reuse the subtitle speed widget set their own max value.
-				// Scale the config value accordingly (see addSubtitleControls)
-				talkspeed = (_subSpeedSlider->getValue() * 255 + sliderMaxValue / 2) / sliderMaxValue;
-				ConfMan.setInt("talkspeed", talkspeed, _domain);
-
-			} else {
-				ConfMan.removeKey("subtitles", _domain);
-				ConfMan.removeKey("talkspeed", _domain);
-				ConfMan.removeKey("speech_mute", _domain);
-			}
-		}
-
-		// Save config file
-		ConfMan.flushToDisk();
-	}
-
-	Dialog::close();
-}
-
-void OptionsDialog::handleCommand(CommandSender *sender, uint32 cmd, uint32 data) {
-	switch (cmd) {
-	case kMidiGainChanged:
-		_midiGainLabel->setLabel(Common::String::format("%.2f", (double)_midiGainSlider->getValue() / 100.0));
-		_midiGainLabel->draw();
-		break;
-	case kMusicVolumeChanged:
-		_musicVolumeLabel->setValue(_musicVolumeSlider->getValue());
-		_musicVolumeLabel->draw();
-		break;
-	case kSfxVolumeChanged:
-		_sfxVolumeLabel->setValue(_sfxVolumeSlider->getValue());
-		_sfxVolumeLabel->draw();
-		break;
-	case kSpeechVolumeChanged:
-		_speechVolumeLabel->setValue(_speechVolumeSlider->getValue());
-		_speechVolumeLabel->draw();
-		break;
-	case kMuteAllChanged:
-		// 'true' because if control is disabled then event do not pass
-		setVolumeSettingsState(true);
-		break;
-	case kSubtitleToggle:
-		// We update the slider settings here, when there are sliders, to
-		// disable the speech volume in case we are in subtitle only mode.
-		if (_musicVolumeSlider)
-			setVolumeSettingsState(true);
-		break;
-	case kSubtitleSpeedChanged:
-		_subSpeedLabel->setValue(_subSpeedSlider->getValue());
-		_subSpeedLabel->draw();
-		break;
-	case kClearSoundFontCmd:
-		_soundFont->setLabel(_c("None", "soundfont"));
-		_soundFontClearButton->setEnabled(false);
-		draw();
-		break;
-	case kOKCmd:
-		setResult(1);
-		close();
-		break;
-	case kCloseCmd:
-		if (g_gui.theme()->getThemeId() != _oldTheme) {
-			g_gui.loadNewTheme(_oldTheme);
-			ConfMan.set("gui_theme", _oldTheme);
-		}
-		close();
-		break;
-	default:
-		Dialog::handleCommand(sender, cmd, data);
-	}
-}
-
-void OptionsDialog::setGraphicSettingsState(bool enabled) {
-	_enableGraphicSettings = enabled;
-
-	_gfxPopUpDesc->setEnabled(enabled);
-	_gfxPopUp->setEnabled(enabled);
-	_renderModePopUpDesc->setEnabled(enabled);
-	_renderModePopUp->setEnabled(enabled);
-#ifndef SMALL_SCREEN_DEVICE
-	_fullscreenCheckbox->setEnabled(enabled);
-	if (_guioptions.contains(GUIO_NOASPECT))
-		_aspectCheckbox->setEnabled(false);
-	else
-		_aspectCheckbox->setEnabled(enabled);
-#endif
-}
-
-void OptionsDialog::setAudioSettingsState(bool enabled) {
-	_enableAudioSettings = enabled;
-	_midiPopUpDesc->setEnabled(enabled);
-	_midiPopUp->setEnabled(enabled);
-
-	const Common::String allFlags = MidiDriver::musicType2GUIO((uint32)-1);
-	bool hasMidiDefined = (strpbrk(_guioptions.c_str(), allFlags.c_str()) != NULL);
-
-	if (_domain != Common::ConfigManager::kApplicationDomain && // global dialog
-		hasMidiDefined && // No flags are specified
-		!(_guioptions.contains(GUIO_MIDIADLIB))) {
-		_oplPopUpDesc->setEnabled(false);
-		_oplPopUp->setEnabled(false);
+EditGameDialog::EditGameDialog(const String &domain, const String &desc)
+	: OptionsDialog(domain, "GameOptions") {
+	// Retrieve all game specific options.
+	const EnginePlugin *plugin = 0;
+	// To allow for game domains without a gameid.
+	// TODO: Is it intentional that this is still supported?
+	String gameId(ConfMan.get("gameid", domain));
+	if (gameId.empty())
+		gameId = domain;
+	// Retrieve the plugin, since we need to access the engine's MetaEngine
+	// implementation.
+	EngineMan.findGame(gameId, &plugin);
+	if (plugin) {
+		_engineOptions = (*plugin)->getExtraGuiOptions(domain);
 	} else {
-		_oplPopUpDesc->setEnabled(enabled);
-		_oplPopUp->setEnabled(enabled);
-	}
-	_outputRatePopUpDesc->setEnabled(enabled);
-	_outputRatePopUp->setEnabled(enabled);
-}
-
-void OptionsDialog::setMIDISettingsState(bool enabled) {
-	if (_guioptions.contains(GUIO_NOMIDI))
-		enabled = false;
-
-	_gmDevicePopUpDesc->setEnabled(_domain.equals(Common::ConfigManager::kApplicationDomain) ? enabled : false);
-	_gmDevicePopUp->setEnabled(_domain.equals(Common::ConfigManager::kApplicationDomain) ? enabled : false);
-
-	_enableMIDISettings = enabled;
-
-	_soundFontButton->setEnabled(enabled);
-	_soundFont->setEnabled(enabled);
-
-	if (enabled && !_soundFont->getLabel().empty() && (_soundFont->getLabel() != _c("None", "soundfont")))
-		_soundFontClearButton->setEnabled(enabled);
-	else
-		_soundFontClearButton->setEnabled(false);
-
-	_multiMidiCheckbox->setEnabled(enabled);
-	_midiGainDesc->setEnabled(enabled);
-	_midiGainSlider->setEnabled(enabled);
-	_midiGainLabel->setEnabled(enabled);
-}
-
-void OptionsDialog::setMT32SettingsState(bool enabled) {
-	_enableMT32Settings = enabled;
-
-	_mt32DevicePopUpDesc->setEnabled(_domain.equals(Common::ConfigManager::kApplicationDomain) ? enabled : false);
-	_mt32DevicePopUp->setEnabled(_domain.equals(Common::ConfigManager::kApplicationDomain) ? enabled : false);
-
-	_enableGSCheckbox->setEnabled(enabled);
-}
-
-void OptionsDialog::setVolumeSettingsState(bool enabled) {
-	bool ena;
-
-	_enableVolumeSettings = enabled;
-
-	ena = enabled && !_muteCheckbox->getState();
-	if (_guioptions.contains(GUIO_NOMUSIC))
-		ena = false;
-
-	_musicVolumeDesc->setEnabled(ena);
-	_musicVolumeSlider->setEnabled(ena);
-	_musicVolumeLabel->setEnabled(ena);
-
-	ena = enabled && !_muteCheckbox->getState();
-	if (_guioptions.contains(GUIO_NOSFX))
-		ena = false;
-
-	_sfxVolumeDesc->setEnabled(ena);
-	_sfxVolumeSlider->setEnabled(ena);
-	_sfxVolumeLabel->setEnabled(ena);
-
-	ena = enabled && !_muteCheckbox->getState();
-	// Disable speech volume slider, when we are in subtitle only mode.
-	if (_subToggleGroup)
-		ena = ena && _subToggleGroup->getValue() != kSubtitlesSubs;
-	if (_guioptions.contains(GUIO_NOSPEECH))
-		ena = false;
-
-	_speechVolumeDesc->setEnabled(ena);
-	_speechVolumeSlider->setEnabled(ena);
-	_speechVolumeLabel->setEnabled(ena);
-
-	_muteCheckbox->setEnabled(enabled);
-}
-
-void OptionsDialog::setSubtitleSettingsState(bool enabled) {
-	bool ena;
-	_enableSubtitleSettings = enabled;
-
-	ena = enabled;
-	if ((_guioptions.contains(GUIO_NOSUBTITLES)) || (_guioptions.contains(GUIO_NOSPEECH)))
-		ena = false;
-
-	_subToggleGroup->setEnabled(ena);
-	_subToggleDesc->setEnabled(ena);
-
-	ena = enabled;
-	if (_guioptions.contains(GUIO_NOSUBTITLES))
-		ena = false;
-
-	_subSpeedDesc->setEnabled(ena);
-	_subSpeedSlider->setEnabled(ena);
-	_subSpeedLabel->setEnabled(ena);
-}
-
-void OptionsDialog::addGraphicControls(GuiObject *boss, const Common::String &prefix) {
-	const OSystem::GraphicsMode *gm = g_system->getSupportedGraphicsModes();
-	Common::String context;
-	if (g_system->getOverlayWidth() <= 320)
-		context = "lowres";
-
-	// The GFX mode popup
-	_gfxPopUpDesc = new StaticTextWidget(boss, prefix + "grModePopupDesc", _("Graphics mode:"));
-	_gfxPopUp = new PopUpWidget(boss, prefix + "grModePopup");
-
-	_gfxPopUp->appendEntry(_("<default>"));
-	_gfxPopUp->appendEntry("");
-	while (gm->name) {
-		_gfxPopUp->appendEntry(_c(gm->description, context), gm->id);
-		gm++;
+		warning("Plugin for target \"%s\" not found! Game specific settings might be missing", domain.c_str());
 	}
 
-	// RenderMode popup
-	const Common::String allFlags = Common::allRenderModesGUIOs();
-	bool renderingTypeDefined = (strpbrk(_guioptions.c_str(), allFlags.c_str()) != NULL);
+	// GAME: Path to game data (r/o), extra data (r/o), and save data (r/w)
+	String gamePath(ConfMan.get("path", _domain));
+	String extraPath(ConfMan.get("extrapath", _domain));
+	String savePath(ConfMan.get("savepath", _domain));
 
-	_renderModePopUpDesc = new StaticTextWidget(boss, prefix + "grRenderPopupDesc", _("Render mode:"), _("Special dithering modes supported by some games"));
-	_renderModePopUp = new PopUpWidget(boss, prefix + "grRenderPopup", _("Special dithering modes supported by some games"));
-	_renderModePopUp->appendEntry(_("<default>"), Common::kRenderDefault);
-	_renderModePopUp->appendEntry("");
-	const Common::RenderModeDescription *rm = Common::g_renderModes;
-	for (; rm->code; ++rm) {
-		Common::String renderGuiOption = Common::renderMode2GUIO(rm->id);
-		if ((_domain == Common::ConfigManager::kApplicationDomain) || (_domain != Common::ConfigManager::kApplicationDomain && !renderingTypeDefined) || (_guioptions.contains(renderGuiOption)))
-			_renderModePopUp->appendEntry(_c(rm->description, context), rm->id);
+	// GAME: Determine the description string
+	String description(ConfMan.get("description", domain));
+	if (description.empty() && !desc.empty()) {
+		description = desc;
 	}
 
-	// Fullscreen checkbox
-	_fullscreenCheckbox = new CheckboxWidget(boss, prefix + "grFullscreenCheckbox", _("Fullscreen mode"));
-
-	// Aspect ratio checkbox
-	_aspectCheckbox = new CheckboxWidget(boss, prefix + "grAspectCheckbox", _("Aspect ratio correction"), _("Correct aspect ratio for 320x200 games"));
-
-	_enableGraphicSettings = true;
-}
-
-void OptionsDialog::addAudioControls(GuiObject *boss, const Common::String &prefix) {
-	// The MIDI mode popup & a label
-	if (g_system->getOverlayWidth() > 320)
-		_midiPopUpDesc = new StaticTextWidget(boss, prefix + "auMidiPopupDesc", _domain == Common::ConfigManager::kApplicationDomain ? _("Preferred Device:") : _("Music Device:"), _domain == Common::ConfigManager::kApplicationDomain ? _("Specifies preferred sound device or sound card emulator") : _("Specifies output sound device or sound card emulator"));
-	else
-		_midiPopUpDesc = new StaticTextWidget(boss, prefix + "auMidiPopupDesc", _domain == Common::ConfigManager::kApplicationDomain ? _c("Preferred Dev.:", "lowres") : _c("Music Device:", "lowres"), _domain == Common::ConfigManager::kApplicationDomain ? _("Specifies preferred sound device or sound card emulator") : _("Specifies output sound device or sound card emulator"));
-	_midiPopUp = new PopUpWidget(boss, prefix + "auMidiPopup", _("Specifies output sound device or sound card emulator"));
-
-	// Populate it
-	const Common::String allFlags = MidiDriver::musicType2GUIO((uint32)-1);
-	bool hasMidiDefined = (strpbrk(_guioptions.c_str(), allFlags.c_str()) != NULL);
-
-	const MusicPlugin::List p = MusicMan.getPlugins();
-	for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end(); ++m) {
-		MusicDevices i = (**m)->getDevices();
-		for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-			Common::String deviceGuiOption = MidiDriver::musicType2GUIO(d->getMusicType());
-
-			if ((_domain == Common::ConfigManager::kApplicationDomain && d->getMusicType() != MT_TOWNS  // global dialog - skip useless FM-Towns, C64, Amiga, AppleIIGS options there
-				 && d->getMusicType() != MT_C64 && d->getMusicType() != MT_AMIGA && d->getMusicType() != MT_APPLEIIGS && d->getMusicType() != MT_PC98)
-				|| (_domain != Common::ConfigManager::kApplicationDomain && !hasMidiDefined) // No flags are specified
-				|| (_guioptions.contains(deviceGuiOption)) // flag is present
-				// HACK/FIXME: For now we have to show GM devices, even when the game only has GUIO_MIDIMT32 set,
-				// else we would not show for example external devices connected via ALSA, since they are always
-				// marked as General MIDI device.
-				|| (deviceGuiOption.contains(GUIO_MIDIGM) && (_guioptions.contains(GUIO_MIDIMT32)))
-				|| d->getMusicDriverId() == "auto" || d->getMusicDriverId() == "null") // always add default and null device
-				_midiPopUp->appendEntry(d->getCompleteName(), d->getHandle());
-		}
-	}
-
-	// The OPL emulator popup & a label
-	_oplPopUpDesc = new StaticTextWidget(boss, prefix + "auOPLPopupDesc", _("AdLib emulator:"), _("AdLib is used for music in many games"));
-	_oplPopUp = new PopUpWidget(boss, prefix + "auOPLPopup", _("AdLib is used for music in many games"));
-
-	// Populate it
-	const OPL::Config::EmulatorDescription *ed = OPL::Config::getAvailable();
-	while (ed->name) {
-		_oplPopUp->appendEntry(_(ed->description), ed->id);
-		++ed;
-	}
-
-	// Sample rate settings
-	_outputRatePopUpDesc = new StaticTextWidget(boss, prefix + "auSampleRatePopupDesc", _("Output rate:"), _("Higher value specifies better sound quality but may be not supported by your soundcard"));
-	_outputRatePopUp = new PopUpWidget(boss, prefix + "auSampleRatePopup", _("Higher value specifies better sound quality but may be not supported by your soundcard"));
-
-	for (int i = 0; outputRateLabels[i]; i++) {
-		_outputRatePopUp->appendEntry(_(outputRateLabels[i]), outputRateValues[i]);
-	}
-
-	_enableAudioSettings = true;
-}
-
-void OptionsDialog::addMIDIControls(GuiObject *boss, const Common::String &prefix) {
-	_gmDevicePopUpDesc = new StaticTextWidget(boss, prefix + "auPrefGmPopupDesc", _("GM Device:"), _("Specifies default sound device for General MIDI output"));
-	_gmDevicePopUp = new PopUpWidget(boss, prefix + "auPrefGmPopup");
-
-	// Populate
-	const MusicPlugin::List p = MusicMan.getPlugins();
-	// Make sure the null device is the first one in the list to avoid undesired
-	// auto detection for users who don't have a saved setting yet.
-	for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end(); ++m) {
-		MusicDevices i = (**m)->getDevices();
-		for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-			if (d->getMusicDriverId() == "null")
-				_gmDevicePopUp->appendEntry(_("Don't use General MIDI music"), d->getHandle());
-		}
-	}
-	// Now we add the other devices.
-	for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end(); ++m) {
-		MusicDevices i = (**m)->getDevices();
-		for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-			if (d->getMusicType() >= MT_GM) {
-				if (d->getMusicType() != MT_MT32)
-					_gmDevicePopUp->appendEntry(d->getCompleteName(), d->getHandle());
-			} else if (d->getMusicDriverId() == "auto") {
-				_gmDevicePopUp->appendEntry(_("Use first available device"), d->getHandle());
-			}
-		}
-	}
-
-	if (!_domain.equals(Common::ConfigManager::kApplicationDomain)) {
-		_gmDevicePopUpDesc->setEnabled(false);
-		_gmDevicePopUp->setEnabled(false);
-	}
-
-	// SoundFont
-	if (g_system->getOverlayWidth() > 320)
-		_soundFontButton = new ButtonWidget(boss, prefix + "mcFontButton", _("SoundFont:"), _("SoundFont is supported by some audio cards, Fluidsynth and Timidity"), kChooseSoundFontCmd);
-	else
-		_soundFontButton = new ButtonWidget(boss, prefix + "mcFontButton", _c("SoundFont:", "lowres"), _("SoundFont is supported by some audio cards, Fluidsynth and Timidity"), kChooseSoundFontCmd);
-	_soundFont = new StaticTextWidget(boss, prefix + "mcFontPath", _c("None", "soundfont"), _("SoundFont is supported by some audio cards, Fluidsynth and Timidity"));
-
-	_soundFontClearButton = addClearButton(boss, prefix + "mcFontClearButton", kClearSoundFontCmd);
-
-	// Multi midi setting
-	_multiMidiCheckbox = new CheckboxWidget(boss, prefix + "mcMixedCheckbox", _("Mixed AdLib/MIDI mode"), _("Use both MIDI and AdLib sound generation"));
-
-	// MIDI gain setting (FluidSynth uses this)
-	_midiGainDesc = new StaticTextWidget(boss, prefix + "mcMidiGainText", _("MIDI gain:"));
-	_midiGainSlider = new SliderWidget(boss, prefix + "mcMidiGainSlider", 0, kMidiGainChanged);
-	_midiGainSlider->setMinValue(0);
-	_midiGainSlider->setMaxValue(1000);
-	_midiGainLabel = new StaticTextWidget(boss, prefix + "mcMidiGainLabel", "1.00");
-
-#ifdef USE_FLUIDSYNTH
-	new ButtonWidget(boss, prefix + "mcFluidSynthSettings", _("FluidSynth Settings"), 0, kFluidSynthSettingsCmd);
-#endif
-
-	_enableMIDISettings = true;
-}
-
-void OptionsDialog::addMT32Controls(GuiObject *boss, const Common::String &prefix) {
-	_mt32DevicePopUpDesc = new StaticTextWidget(boss, prefix + "auPrefMt32PopupDesc", _("MT-32 Device:"), _("Specifies default sound device for Roland MT-32/LAPC1/CM32l/CM64 output"));
-	_mt32DevicePopUp = new PopUpWidget(boss, prefix + "auPrefMt32Popup");
-
-	// GS Extensions setting
-	_enableGSCheckbox = new CheckboxWidget(boss, prefix + "mcGSCheckbox", _("Roland GS Mode (disable GM mapping)"), _("Turns off General MIDI mapping for games with Roland MT-32 soundtrack"));
-
-	const MusicPlugin::List p = MusicMan.getPlugins();
-	// Make sure the null device is the first one in the list to avoid undesired
-	// auto detection for users who don't have a saved setting yet.
-	for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end(); ++m) {
-		MusicDevices i = (**m)->getDevices();
-		for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-			if (d->getMusicDriverId() == "null")
-				_mt32DevicePopUp->appendEntry(_("No MT-32 compatible device"), d->getHandle());
-		}
-	}
-	// Now we add the other devices.
-	for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end(); ++m) {
-		MusicDevices i = (**m)->getDevices();
-		for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-			if (d->getMusicType() >= MT_GM)
-				_mt32DevicePopUp->appendEntry(d->getCompleteName(), d->getHandle());
-			else if (d->getMusicDriverId() == "auto")
-				_mt32DevicePopUp->appendEntry(_("Use first available device"), d->getHandle());
-		}
-	}
-
-	if (!_domain.equals(Common::ConfigManager::kApplicationDomain)) {
-		_mt32DevicePopUpDesc->setEnabled(false);
-		_mt32DevicePopUp->setEnabled(false);
-	}
-
-	_enableMT32Settings = true;
-}
-
-// The function has an extra slider range parameter, since both the launcher and SCUMM engine
-// make use of the widgets. The launcher range is 0-255. SCUMM's 0-9
-void OptionsDialog::addSubtitleControls(GuiObject *boss, const Common::String &prefix, int maxSliderVal) {
-
-	if (g_system->getOverlayWidth() > 320) {
-		_subToggleDesc = new StaticTextWidget(boss, prefix + "subToggleDesc", _("Text and Speech:"));
-
-		_subToggleGroup = new RadiobuttonGroup(boss, kSubtitleToggle);
-
-		_subToggleSpeechOnly = new RadiobuttonWidget(boss, prefix + "subToggleSpeechOnly", _subToggleGroup, kSubtitlesSpeech, _("Speech"));
-		_subToggleSubOnly = new RadiobuttonWidget(boss, prefix + "subToggleSubOnly", _subToggleGroup, kSubtitlesSubs, _("Subtitles"));
-		_subToggleSubBoth = new RadiobuttonWidget(boss, prefix + "subToggleSubBoth", _subToggleGroup, kSubtitlesBoth, _("Both"));
-
-		_subSpeedDesc = new StaticTextWidget(boss, prefix + "subSubtitleSpeedDesc", _("Subtitle speed:"));
-	} else {
-		_subToggleDesc = new StaticTextWidget(boss, prefix + "subToggleDesc", _c("Text and Speech:", "lowres"));
-
-		_subToggleGroup = new RadiobuttonGroup(boss, kSubtitleToggle);
-
-		_subToggleSpeechOnly = new RadiobuttonWidget(boss, prefix + "subToggleSpeechOnly", _subToggleGroup, kSubtitlesSpeech, _("Spch"), _("Speech"));
-		_subToggleSubOnly = new RadiobuttonWidget(boss, prefix + "subToggleSubOnly", _subToggleGroup, kSubtitlesSubs, _("Subs"), _("Subtitles"));
-		_subToggleSubBoth = new RadiobuttonWidget(boss, prefix + "subToggleSubBoth", _subToggleGroup, kSubtitlesBoth, _c("Both", "lowres"), _("Show subtitles and play speech"));
-
-		_subSpeedDesc = new StaticTextWidget(boss, prefix + "subSubtitleSpeedDesc", _c("Subtitle speed:", "lowres"));
-	}
-
-	// Subtitle speed
-	_subSpeedSlider = new SliderWidget(boss, prefix + "subSubtitleSpeedSlider", 0, kSubtitleSpeedChanged);
-	_subSpeedLabel = new StaticTextWidget(boss, prefix + "subSubtitleSpeedLabel", "100%");
-	_subSpeedSlider->setMinValue(0); _subSpeedSlider->setMaxValue(maxSliderVal);
-	_subSpeedLabel->setFlags(WIDGET_CLEARBG);
-
-	_enableSubtitleSettings = true;
-}
-
-void OptionsDialog::addVolumeControls(GuiObject *boss, const Common::String &prefix) {
-
-	// Volume controllers
-	if (g_system->getOverlayWidth() > 320)
-		_musicVolumeDesc = new StaticTextWidget(boss, prefix + "vcMusicText", _("Music volume:"));
-	else
-		_musicVolumeDesc = new StaticTextWidget(boss, prefix + "vcMusicText", _c("Music volume:", "lowres"));
-	_musicVolumeSlider = new SliderWidget(boss, prefix + "vcMusicSlider", 0, kMusicVolumeChanged);
-	_musicVolumeLabel = new StaticTextWidget(boss, prefix + "vcMusicLabel", "100%");
-	_musicVolumeSlider->setMinValue(0);
-	_musicVolumeSlider->setMaxValue(Audio::Mixer::kMaxMixerVolume);
-	_musicVolumeLabel->setFlags(WIDGET_CLEARBG);
-
-	_muteCheckbox = new CheckboxWidget(boss, prefix + "vcMuteCheckbox", _("Mute All"), 0, kMuteAllChanged);
-
-	if (g_system->getOverlayWidth() > 320)
-		_sfxVolumeDesc = new StaticTextWidget(boss, prefix + "vcSfxText", _("SFX volume:"), _("Special sound effects volume"));
-	else
-		_sfxVolumeDesc = new StaticTextWidget(boss, prefix + "vcSfxText", _c("SFX volume:", "lowres"), _("Special sound effects volume"));
-	_sfxVolumeSlider = new SliderWidget(boss, prefix + "vcSfxSlider", _("Special sound effects volume"), kSfxVolumeChanged);
-	_sfxVolumeLabel = new StaticTextWidget(boss, prefix + "vcSfxLabel", "100%");
-	_sfxVolumeSlider->setMinValue(0);
-	_sfxVolumeSlider->setMaxValue(Audio::Mixer::kMaxMixerVolume);
-	_sfxVolumeLabel->setFlags(WIDGET_CLEARBG);
-
-	if (g_system->getOverlayWidth() > 320)
-		_speechVolumeDesc = new StaticTextWidget(boss, prefix + "vcSpeechText" , _("Speech volume:"));
-	else
-		_speechVolumeDesc = new StaticTextWidget(boss, prefix + "vcSpeechText" , _c("Speech volume:", "lowres"));
-	_speechVolumeSlider = new SliderWidget(boss, prefix + "vcSpeechSlider", 0, kSpeechVolumeChanged);
-	_speechVolumeLabel = new StaticTextWidget(boss, prefix + "vcSpeechLabel", "100%");
-	_speechVolumeSlider->setMinValue(0);
-	_speechVolumeSlider->setMaxValue(Audio::Mixer::kMaxMixerVolume);
-	_speechVolumeLabel->setFlags(WIDGET_CLEARBG);
-
-	_enableVolumeSettings = true;
-}
-
-void OptionsDialog::addEngineControls(GuiObject *boss, const Common::String &prefix, const ExtraGuiOptions &engineOptions) {
-	// Note: up to 7 engine options can currently fit on screen (the most that
-	// can fit in a 320x200 screen with the classic theme).
-	// TODO: Increase this number by including the checkboxes inside a scroll
-	// widget. The appropriate number of checkboxes will need to be added to
-	// the theme files.
-
-	uint i = 1;
-	ExtraGuiOptions::const_iterator iter;
-	for (iter = engineOptions.begin(); iter != engineOptions.end(); ++iter, ++i) {
-		Common::String id = Common::String::format("%d", i);
-		_engineCheckboxes.push_back(new CheckboxWidget(boss,
-			prefix + "customOption" + id + "Checkbox", _(iter->label), _(iter->tooltip)));
-	}
-}
-
-bool OptionsDialog::loadMusicDeviceSetting(PopUpWidget *popup, Common::String setting, MusicType preferredType) {
-	if (!popup || !popup->isEnabled())
-		return true;
-
-	if (_domain != Common::ConfigManager::kApplicationDomain || ConfMan.hasKey(setting, _domain) || preferredType) {
-		const Common::String drv = ConfMan.get(setting, (_domain != Common::ConfigManager::kApplicationDomain && !ConfMan.hasKey(setting, _domain)) ? Common::ConfigManager::kApplicationDomain : _domain);
-		const MusicPlugin::List p = MusicMan.getPlugins();
-
-		for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end(); ++m) {
-			MusicDevices i = (**m)->getDevices();
-			for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-				if (setting.empty() ? (preferredType == d->getMusicType()) : (drv == d->getCompleteId())) {
-					popup->setSelectedTag(d->getHandle());
-					return popup->getSelected() != -1;
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-void OptionsDialog::saveMusicDeviceSetting(PopUpWidget *popup, Common::String setting) {
-	if (!popup || !_enableAudioSettings)
-		return;
-
-	const MusicPlugin::List p = MusicMan.getPlugins();
-	bool found = false;
-	for (MusicPlugin::List::const_iterator m = p.begin(); m != p.end() && !found; ++m) {
-		MusicDevices i = (**m)->getDevices();
-		for (MusicDevices::iterator d = i.begin(); d != i.end(); ++d) {
-			if (d->getHandle() == popup->getSelectedTag()) {
-				ConfMan.set(setting, d->getCompleteId(), _domain);
-				found = true;
-				break;
-			}
-		}
-	}
-
-	if (!found)
-		ConfMan.removeKey(setting, _domain);
-}
-
-int OptionsDialog::getSubtitleMode(bool subtitles, bool speech_mute) {
-	if (_guioptions.contains(GUIO_NOSUBTITLES))
-		return kSubtitlesSpeech; // Speech only
-	if (_guioptions.contains(GUIO_NOSPEECH))
-		return kSubtitlesSubs; // Subtitles only
-
-	if (!subtitles && !speech_mute) // Speech only
-		return kSubtitlesSpeech;
-	else if (subtitles && !speech_mute) // Speech and subtitles
-		return kSubtitlesBoth;
-	else if (subtitles && speech_mute) // Subtitles only
-		return kSubtitlesSubs;
-	else
-		warning("Wrong configuration: Both subtitles and speech are off. Assuming subtitles only");
-	return kSubtitlesSubs;
-}
-
-void OptionsDialog::reflowLayout() {
-	if (_graphicsTabId != -1 && _tabWidget)
-		_tabWidget->setTabTitle(_graphicsTabId, g_system->getOverlayWidth() > 320 ? _("Graphics") : _("GFX"));
-
-	Dialog::reflowLayout();
-}
-
-#pragma mark -
-
-
-GlobalOptionsDialog::GlobalOptionsDialog()
-	: OptionsDialog(Common::ConfigManager::kApplicationDomain, "GlobalOptions") {
-
-	// The tab widget
-	TabWidget *tab = new TabWidget(this, "GlobalOptions.TabWidget");
+	// GUI:  Add tab widget
+	TabWidget *tab = new TabWidget(this, "GameOptions.TabWidget");
 
 	//
-	// 1) The graphics tab
+	// 1) The game tab
+	//
+	tab->addTab(_("Game"));
+
+	// GUI:  Label & edit widget for the game ID
+	if (g_system->getOverlayWidth() > 320)
+		new StaticTextWidget(tab, "GameOptions_Game.Id", _("ID:"), _("Short game identifier used for referring to savegames and running the game from the command line"));
+	else
+		new StaticTextWidget(tab, "GameOptions_Game.Id", _c("ID:", "lowres"), _("Short game identifier used for referring to savegames and running the game from the command line"));
+	_domainWidget = new DomainEditTextWidget(tab, "GameOptions_Game.Domain", _domain, _("Short game identifier used for referring to savegames and running the game from the command line"));
+
+	// GUI:  Label & edit widget for the description
+	if (g_system->getOverlayWidth() > 320)
+		new StaticTextWidget(tab, "GameOptions_Game.Name", _("Name:"), _("Full title of the game"));
+	else
+		new StaticTextWidget(tab, "GameOptions_Game.Name", _c("Name:", "lowres"), _("Full title of the game"));
+	_descriptionWidget = new EditTextWidget(tab, "GameOptions_Game.Desc", description, _("Full title of the game"));
+
+	// Language popup
+	_langPopUpDesc = new StaticTextWidget(tab, "GameOptions_Game.LangPopupDesc", _("Language:"), _("Language of the game. This will not turn your Spanish game version into English"));
+	_langPopUp = new PopUpWidget(tab, "GameOptions_Game.LangPopup", _("Language of the game. This will not turn your Spanish game version into English"));
+	_langPopUp->appendEntry(_("<default>"), (uint32)Common::UNK_LANG);
+	_langPopUp->appendEntry("", (uint32)Common::UNK_LANG);
+	const Common::LanguageDescription *l = Common::g_languages;
+	for (; l->code; ++l) {
+		if (checkGameGUIOptionLanguage(l->id, _guioptionsString))
+			_langPopUp->appendEntry(l->description, l->id);
+	}
+
+	// Platform popup
+	if (g_system->getOverlayWidth() > 320)
+		_platformPopUpDesc = new StaticTextWidget(tab, "GameOptions_Game.PlatformPopupDesc", _("Platform:"), _("Platform the game was originally designed for"));
+	else
+		_platformPopUpDesc = new StaticTextWidget(tab, "GameOptions_Game.PlatformPopupDesc", _c("Platform:", "lowres"), _("Platform the game was originally designed for"));
+	_platformPopUp = new PopUpWidget(tab, "GameOptions_Game.PlatformPopup", _("Platform the game was originally designed for"));
+	_platformPopUp->appendEntry(_("<default>"));
+	_platformPopUp->appendEntry("");
+	const Common::PlatformDescription *p = Common::g_platforms;
+	for (; p->code; ++p) {
+		_platformPopUp->appendEntry(p->description, p->id);
+	}
+
+	//
+	// 2) The engine tab (shown only if there are custom engine options)
+	//
+	if (_engineOptions.size() > 0) {
+		tab->addTab(_("Engine"));
+
+		addEngineControls(tab, "GameOptions_Engine.", _engineOptions);
+	}
+
+	//
+	// 3) The graphics tab
 	//
 	_graphicsTabId = tab->addTab(g_system->getOverlayWidth() > 320 ? _("Graphics") : _("GFX"));
-	addGraphicControls(tab, "GlobalOptions_Graphics.");
+
+	if (g_system->getOverlayWidth() > 320)
+		_globalGraphicsOverride = new CheckboxWidget(tab, "GameOptions_Graphics.EnableTabCheckbox", _("Override global graphic settings"), 0, kCmdGlobalGraphicsOverride);
+	else
+		_globalGraphicsOverride = new CheckboxWidget(tab, "GameOptions_Graphics.EnableTabCheckbox", _c("Override global graphic settings", "lowres"), 0, kCmdGlobalGraphicsOverride);
+
+	addGraphicControls(tab, "GameOptions_Graphics.");
 
 	//
-	// 2) The audio tab
+	// 4) The audio tab
 	//
 	tab->addTab(_("Audio"));
-	addAudioControls(tab, "GlobalOptions_Audio.");
-	addSubtitleControls(tab, "GlobalOptions_Audio.");
 
+	if (g_system->getOverlayWidth() > 320)
+		_globalAudioOverride = new CheckboxWidget(tab, "GameOptions_Audio.EnableTabCheckbox", _("Override global audio settings"), 0, kCmdGlobalAudioOverride);
+	else
+		_globalAudioOverride = new CheckboxWidget(tab, "GameOptions_Audio.EnableTabCheckbox", _c("Override global audio settings", "lowres"), 0, kCmdGlobalAudioOverride);
+
+	addAudioControls(tab, "GameOptions_Audio.");
+	addSubtitleControls(tab, "GameOptions_Audio.");
+
+	//
+	// 5) The volume tab
+	//
 	if (g_system->getOverlayWidth() > 320)
 		tab->addTab(_("Volume"));
 	else
 		tab->addTab(_c("Volume", "lowres"));
-	addVolumeControls(tab, "GlobalOptions_Volume.");
-
-	// TODO: cd drive setting
-
-	//
-	// 3) The MIDI tab
-	//
-	_midiTabId = tab->addTab(_("MIDI"));
-	addMIDIControls(tab, "GlobalOptions_MIDI.");
-
-	//
-	// 4) The MT-32 tab
-	//
-	tab->addTab(_("MT-32"));
-	addMT32Controls(tab, "GlobalOptions_MT32.");
-
-	//
-	// 5) The Paths tab
-	//
-	if (g_system->getOverlayWidth() > 320)
-		_pathsTabId = tab->addTab(_("Paths"));
-	else
-		_pathsTabId = tab->addTab(_c("Paths", "lowres"));
-
-#if !( defined(__DC__) || defined(__GP32__) )
-	// These two buttons have to be extra wide, or the text will be
-	// truncated in the small version of the GUI.
-
-	// Save game path
-	if (g_system->getOverlayWidth() > 320)
-		new ButtonWidget(tab, "GlobalOptions_Paths.SaveButton", _("Save Path:"), _("Specifies where your savegames are put"), kChooseSaveDirCmd);
-	else
-		new ButtonWidget(tab, "GlobalOptions_Paths.SaveButton", _c("Save Path:", "lowres"), _("Specifies where your savegames are put"), kChooseSaveDirCmd);
-	_savePath = new StaticTextWidget(tab, "GlobalOptions_Paths.SavePath", "/foo/bar", _("Specifies where your savegames are put"));
-
-	_savePathClearButton = addClearButton(tab, "GlobalOptions_Paths.SavePathClearButton", kSavePathClearCmd);
 
 	if (g_system->getOverlayWidth() > 320)
-		new ButtonWidget(tab, "GlobalOptions_Paths.ThemeButton", _("Theme Path:"), 0, kChooseThemeDirCmd);
+		_globalVolumeOverride = new CheckboxWidget(tab, "GameOptions_Volume.EnableTabCheckbox", _("Override global volume settings"), 0, kCmdGlobalVolumeOverride);
 	else
-		new ButtonWidget(tab, "GlobalOptions_Paths.ThemeButton", _c("Theme Path:", "lowres"), 0, kChooseThemeDirCmd);
-	_themePath = new StaticTextWidget(tab, "GlobalOptions_Paths.ThemePath", _c("None", "path"));
+		_globalVolumeOverride = new CheckboxWidget(tab, "GameOptions_Volume.EnableTabCheckbox", _c("Override global volume settings", "lowres"), 0, kCmdGlobalVolumeOverride);
 
-	_themePathClearButton = addClearButton(tab, "GlobalOptions_Paths.ThemePathClearButton", kThemePathClearCmd);
-
-	if (g_system->getOverlayWidth() > 320)
-		new ButtonWidget(tab, "GlobalOptions_Paths.ExtraButton", _("Extra Path:"), _("Specifies path to additional data used by all games or ScummVM"), kChooseExtraDirCmd);
-	else
-		new ButtonWidget(tab, "GlobalOptions_Paths.ExtraButton", _c("Extra Path:", "lowres"), _("Specifies path to additional data used by all games or ScummVM"), kChooseExtraDirCmd);
-	_extraPath = new StaticTextWidget(tab, "GlobalOptions_Paths.ExtraPath", _c("None", "path"), _("Specifies path to additional data used by all games or ScummVM"));
-
-	_extraPathClearButton = addClearButton(tab, "GlobalOptions_Paths.ExtraPathClearButton", kExtraPathClearCmd);
-
-#ifdef DYNAMIC_MODULES
-	if (g_system->getOverlayWidth() > 320)
-		new ButtonWidget(tab, "GlobalOptions_Paths.PluginsButton", _("Plugins Path:"), 0, kChoosePluginsDirCmd);
-	else
-		new ButtonWidget(tab, "GlobalOptions_Paths.PluginsButton", _c("Plugins Path:", "lowres"), 0, kChoosePluginsDirCmd);
-	_pluginsPath = new StaticTextWidget(tab, "GlobalOptions_Paths.PluginsPath", _c("None", "path"));
-#endif
-#endif
+	addVolumeControls(tab, "GameOptions_Volume.");
 
 	//
-	// 6) The miscellaneous tab
+	// 6) The MIDI tab
 	//
-	if (g_system->getOverlayWidth() > 320)
-		tab->addTab(_("Misc"));
-	else
-		tab->addTab(_c("Misc", "lowres"));
+	if (!_guioptions.contains(GUIO_NOMIDI)) {
+		tab->addTab(_("MIDI"));
 
-	new ButtonWidget(tab, "GlobalOptions_Misc.ThemeButton", _("Theme:"), 0, kChooseThemeCmd);
-	_curTheme = new StaticTextWidget(tab, "GlobalOptions_Misc.CurTheme", g_gui.theme()->getThemeName());
+		if (g_system->getOverlayWidth() > 320)
+			_globalMIDIOverride = new CheckboxWidget(tab, "GameOptions_MIDI.EnableTabCheckbox", _("Override global MIDI settings"), 0, kCmdGlobalMIDIOverride);
+		else
+			_globalMIDIOverride = new CheckboxWidget(tab, "GameOptions_MIDI.EnableTabCheckbox", _c("Override global MIDI settings", "lowres"), 0, kCmdGlobalMIDIOverride);
 
-
-	_rendererPopUpDesc = new StaticTextWidget(tab, "GlobalOptions_Misc.RendererPopupDesc", _("GUI Renderer:"));
-	_rendererPopUp = new PopUpWidget(tab, "GlobalOptions_Misc.RendererPopup");
-
-	if (g_system->getOverlayWidth() > 320) {
-		for (uint i = 1; i < GUI::ThemeEngine::_rendererModesSize; ++i)
-			_rendererPopUp->appendEntry(_(GUI::ThemeEngine::_rendererModes[i].name), GUI::ThemeEngine::_rendererModes[i].mode);
-	} else {
-		for (uint i = 1; i < GUI::ThemeEngine::_rendererModesSize; ++i)
-			_rendererPopUp->appendEntry(_(GUI::ThemeEngine::_rendererModes[i].shortname), GUI::ThemeEngine::_rendererModes[i].mode);
+		addMIDIControls(tab, "GameOptions_MIDI.");
 	}
 
+	//
+	// 7) The AdLib tab
+	//
+	if (!_guioptions.contains(GUIO_NOMIDI)) {
+		tab->addTab(_("AdLib"));
+
+		if (g_system->getOverlayWidth() > 320)
+			_globalAdLibOverride = new CheckboxWidget(tab, "GameOptions_AdLib.EnableTabCheckbox", _("Override global AdLib settings"), 0, kCmdGlobalAdLibOverride);
+		else
+			_globalAdLibOverride = new CheckboxWidget(tab, "GameOptions_AdLib.EnableTabCheckbox", _c("Override global AdLib settings", "lowres"), 0, kCmdGlobalAdLibOverride);
+
+		addAdLibControls(tab, "GameOptions_AdLib.");
+	}
+
+	//
+	// 8) The Paths tab
+	//
 	if (g_system->getOverlayWidth() > 320)
-		_autosavePeriodPopUpDesc = new StaticTextWidget(tab, "GlobalOptions_Misc.AutosavePeriodPopupDesc", _("Autosave:"));
+		tab->addTab(_("Paths"));
 	else
-		_autosavePeriodPopUpDesc = new StaticTextWidget(tab, "GlobalOptions_Misc.AutosavePeriodPopupDesc", _c("Autosave:", "lowres"));
-	_autosavePeriodPopUp = new PopUpWidget(tab, "GlobalOptions_Misc.AutosavePeriodPopup");
+		tab->addTab(_c("Paths", "lowres"));
 
-	for (int i = 0; savePeriodLabels[i]; i++) {
-		_autosavePeriodPopUp->appendEntry(_(savePeriodLabels[i]), savePeriodValues[i]);
-	}
+	// These buttons have to be extra wide, or the text will be truncated
+	// in the small version of the GUI.
 
-#ifdef SMALL_SCREEN_DEVICE
-	new ButtonWidget(tab, "GlobalOptions_Misc.KeysButton", _("Keys"), 0, kChooseKeyMappingCmd);
-#endif
-
-	// TODO: joystick setting
-
-
-#ifdef USE_TRANSLATION
-	_guiLanguagePopUpDesc = new StaticTextWidget(tab, "GlobalOptions_Misc.GuiLanguagePopupDesc", _("GUI Language:"), _("Language of ScummVM GUI"));
-	_guiLanguagePopUp = new PopUpWidget(tab, "GlobalOptions_Misc.GuiLanguagePopup");
-#ifdef USE_DETECTLANG
-	_guiLanguagePopUp->appendEntry(_("<default>"), Common::kTranslationAutodetectId);
-#endif // USE_DETECTLANG
-	_guiLanguagePopUp->appendEntry("English", Common::kTranslationBuiltinId);
-	_guiLanguagePopUp->appendEntry("", 0);
-	Common::TLangArray languages = TransMan.getSupportedLanguageNames();
-	Common::TLangArray::iterator lang = languages.begin();
-	while (lang != languages.end()) {
-		_guiLanguagePopUp->appendEntry(lang->name, lang->id);
-		lang++;
-	}
-
-	// Select the currently configured language or default/English if
-	// nothing is specified.
-	if (ConfMan.hasKey("gui_language"))
-		_guiLanguagePopUp->setSelectedTag(TransMan.parseLanguage(ConfMan.get("gui_language")));
+	// GUI:  Button + Label for the game path
+	if (g_system->getOverlayWidth() > 320)
+		new ButtonWidget(tab, "GameOptions_Paths.Gamepath", _("Game Path:"), 0, kCmdGameBrowser);
 	else
-#ifdef USE_DETECTLANG
-		_guiLanguagePopUp->setSelectedTag(Common::kTranslationAutodetectId);
-#else // !USE_DETECTLANG
-		_guiLanguagePopUp->setSelectedTag(Common::kTranslationBuiltinId);
-#endif // USE_DETECTLANG
+		new ButtonWidget(tab, "GameOptions_Paths.Gamepath", _c("Game Path:", "lowres"), 0, kCmdGameBrowser);
+	_gamePathWidget = new StaticTextWidget(tab, "GameOptions_Paths.GamepathText", gamePath);
 
-#endif // USE_TRANSLATION
+	// GUI:  Button + Label for the additional path
+	if (g_system->getOverlayWidth() > 320)
+		new ButtonWidget(tab, "GameOptions_Paths.Extrapath", _("Extra Path:"), _("Specifies path to additional data used the game"), kCmdExtraBrowser);
+	else
+		new ButtonWidget(tab, "GameOptions_Paths.Extrapath", _c("Extra Path:", "lowres"), _("Specifies path to additional data used the game"), kCmdExtraBrowser);
+	_extraPathWidget = new StaticTextWidget(tab, "GameOptions_Paths.ExtrapathText", extraPath, _("Specifies path to additional data used the game"));
+
+	_extraPathClearButton = addClearButton(tab, "GameOptions_Paths.ExtraPathClearButton", kCmdExtraPathClear);
+
+	// GUI:  Button + Label for the save path
+	if (g_system->getOverlayWidth() > 320)
+		new ButtonWidget(tab, "GameOptions_Paths.Savepath", _("Save Path:"), _("Specifies where your savegames are put"), kCmdSaveBrowser);
+	else
+		new ButtonWidget(tab, "GameOptions_Paths.Savepath", _c("Save Path:", "lowres"), _("Specifies where your savegames are put"), kCmdSaveBrowser);
+	_savePathWidget = new StaticTextWidget(tab, "GameOptions_Paths.SavepathText", savePath, _("Specifies where your savegames are put"));
+
+	_savePathClearButton = addClearButton(tab, "GameOptions_Paths.SavePathClearButton", kCmdSavePathClear);
 
 	// Activate the first tab
 	tab->setActiveTab(0);
 	_tabWidget = tab;
 
 	// Add OK & Cancel buttons
-	new ButtonWidget(this, "GlobalOptions.Cancel", _("Cancel"), 0, kCloseCmd);
-	new ButtonWidget(this, "GlobalOptions.Ok", _("OK"), 0, kOKCmd);
-
-#ifdef SMALL_SCREEN_DEVICE
-	_keysDialog = new KeysDialog();
-#endif
-
-#ifdef USE_FLUIDSYNTH
-	_fluidSynthSettingsDialog = new FluidSynthSettingsDialog();
-#endif
+	new ButtonWidget(this, "GameOptions.Cancel", _("Cancel"), 0, kCloseCmd);
+	new ButtonWidget(this, "GameOptions.Ok", _("OK"), 0, kOKCmd);
 }
 
-GlobalOptionsDialog::~GlobalOptionsDialog() {
-#ifdef SMALL_SCREEN_DEVICE
-	delete _keysDialog;
-#endif
-
-#ifdef USE_FLUIDSYNTH
-	delete _fluidSynthSettingsDialog;
-#endif
-}
-
-void GlobalOptionsDialog::open() {
+void EditGameDialog::open() {
 	OptionsDialog::open();
 
-#if !( defined(__DC__) || defined(__GP32__) )
-	// Set _savePath to the current save path
-	Common::String savePath(ConfMan.get("savepath", _domain));
-	Common::String themePath(ConfMan.get("themepath", _domain));
-	Common::String extraPath(ConfMan.get("extrapath", _domain));
-
-	if (savePath.empty() || !ConfMan.hasKey("savepath", _domain)) {
-		_savePath->setLabel(_("Default"));
-	} else {
-		_savePath->setLabel(savePath);
-	}
-
-	if (themePath.empty() || !ConfMan.hasKey("themepath", _domain)) {
-		_themePath->setLabel(_c("None", "path"));
-	} else {
-		_themePath->setLabel(themePath);
-	}
-
+	String extraPath(ConfMan.get("extrapath", _domain));
 	if (extraPath.empty() || !ConfMan.hasKey("extrapath", _domain)) {
-		_extraPath->setLabel(_c("None", "path"));
+		_extraPathWidget->setLabel(_c("None", "path"));
+	}
+
+	String savePath(ConfMan.get("savepath", _domain));
+	if (savePath.empty() || !ConfMan.hasKey("savepath", _domain)) {
+		_savePathWidget->setLabel(_("Default"));
+	}
+
+	int sel, i;
+	bool e;
+
+	// En-/disable dialog items depending on whether overrides are active or not.
+
+	e = ConfMan.hasKey("gfx_mode", _domain) ||
+		ConfMan.hasKey("render_mode", _domain) ||
+		ConfMan.hasKey("fullscreen", _domain) ||
+		ConfMan.hasKey("aspect_ratio", _domain);
+	_globalGraphicsOverride->setState(e);
+
+	e = ConfMan.hasKey("music_driver", _domain) ||
+		ConfMan.hasKey("output_rate", _domain) ||
+		ConfMan.hasKey("subtitles", _domain) ||
+		ConfMan.hasKey("talkspeed", _domain);
+	_globalAudioOverride->setState(e);
+
+	e = ConfMan.hasKey("music_volume", _domain) ||
+		ConfMan.hasKey("sfx_volume", _domain) ||
+		ConfMan.hasKey("speech_volume", _domain);
+	_globalVolumeOverride->setState(e);
+
+	if (!_guioptions.contains(GUIO_NOMIDI)) {
+		e = ConfMan.hasKey("soundfont", _domain) ||		
+			ConfMan.hasKey("native_mt32", _domain) ||
+			ConfMan.hasKey("enable_gs", _domain) ||
+			ConfMan.hasKey("midi_gain", _domain);
+		_globalMIDIOverride->setState(e);
+	}
+
+	if (!_guioptions.contains(GUIO_NOMIDI)) {
+		e = 	ConfMan.hasKey("opl_driver", _domain) ||
+			ConfMan.hasKey("multi_midi", _domain);
+		_globalAdLibOverride->setState(e);
+	}
+
+	// TODO: game path
+
+	const Common::Language lang = Common::parseLanguage(ConfMan.get("language", _domain));
+
+	if (ConfMan.hasKey("language", _domain)) {
+		_langPopUp->setSelectedTag(lang);
 	} else {
-		_extraPath->setLabel(extraPath);
+		_langPopUp->setSelectedTag((uint32)Common::UNK_LANG);
 	}
 
-#ifdef DYNAMIC_MODULES
-	Common::String pluginsPath(ConfMan.get("pluginspath", _domain));
-	if (pluginsPath.empty() || !ConfMan.hasKey("pluginspath", _domain)) {
-		_pluginsPath->setLabel(_c("None", "path"));
-	} else {
-		_pluginsPath->setLabel(pluginsPath);
-	}
-#endif
-#endif
-
-	// Misc Tab
-	_autosavePeriodPopUp->setSelected(1);
-	int value = ConfMan.getInt("autosave_period");
-	for (int i = 0; savePeriodLabels[i]; i++) {
-		if (value == savePeriodValues[i])
-			_autosavePeriodPopUp->setSelected(i);
+	if (_langPopUp->numEntries() <= 3) { // If only one language is avaliable
+		_langPopUpDesc->setEnabled(false);
+		_langPopUp->setEnabled(false);
 	}
 
-	ThemeEngine::GraphicsMode mode = ThemeEngine::findMode(ConfMan.get("gui_renderer"));
-	if (mode == ThemeEngine::kGfxDisabled)
-		mode = ThemeEngine::_defaultRendererMode;
-	_rendererPopUp->setSelectedTag(mode);
+	// Set the state of engine-specific checkboxes
+	for (uint j = 0; j < _engineOptions.size(); ++j) {
+		// The default values for engine-specific checkboxes are not set when
+		// ScummVM starts, as this would require us to load and poll all of the
+		// engine plugins on startup. Thus, we set the state of each custom
+		// option checkbox to what is specified by the engine plugin, and
+		// update it only if a value has been set in the configuration of the
+		// currently selected game.
+		bool isChecked = _engineOptions[j].defaultState;
+		if (ConfMan.hasKey(_engineOptions[j].configOption, _domain))
+			isChecked = ConfMan.getBool(_engineOptions[j].configOption, _domain);
+		_engineCheckboxes[j]->setState(isChecked);
+	}
+
+	const Common::PlatformDescription *p = Common::g_platforms;
+	const Common::Platform platform = Common::parsePlatform(ConfMan.get("platform", _domain));
+	sel = 0;
+	for (i = 0; p->code; ++p, ++i) {
+		if (platform == p->id)
+			sel = i + 2;
+	}
+	_platformPopUp->setSelected(sel);
 }
 
-void GlobalOptionsDialog::close() {
+
+void EditGameDialog::close() {
 	if (getResult()) {
-		Common::String savePath(_savePath->getLabel());
-		if (!savePath.empty() && (savePath != _("Default")))
-			ConfMan.set("savepath", savePath, _domain);
-		else
-			ConfMan.removeKey("savepath", _domain);
+		ConfMan.set("description", _descriptionWidget->getEditString(), _domain);
 
-		Common::String themePath(_themePath->getLabel());
-		if (!themePath.empty() && (themePath != _c("None", "path")))
-			ConfMan.set("themepath", themePath, _domain);
+		Common::Language lang = (Common::Language)_langPopUp->getSelectedTag();
+		if (lang < 0)
+			ConfMan.removeKey("language", _domain);
 		else
-			ConfMan.removeKey("themepath", _domain);
+			ConfMan.set("language", Common::getLanguageCode(lang), _domain);
 
-		Common::String extraPath(_extraPath->getLabel());
+		String gamePath(_gamePathWidget->getLabel());
+		if (!gamePath.empty())
+			ConfMan.set("path", gamePath, _domain);
+
+		String extraPath(_extraPathWidget->getLabel());
 		if (!extraPath.empty() && (extraPath != _c("None", "path")))
 			ConfMan.set("extrapath", extraPath, _domain);
 		else
 			ConfMan.removeKey("extrapath", _domain);
 
-#ifdef DYNAMIC_MODULES
-		Common::String pluginsPath(_pluginsPath->getLabel());
-		if (!pluginsPath.empty() && (pluginsPath != _c("None", "path")))
-			ConfMan.set("pluginspath", pluginsPath, _domain);
+		String savePath(_savePathWidget->getLabel());
+		if (!savePath.empty() && (savePath != _("Default")))
+			ConfMan.set("savepath", savePath, _domain);
 		else
-			ConfMan.removeKey("pluginspath", _domain);
-#endif
+			ConfMan.removeKey("savepath", _domain);
 
-		ConfMan.setInt("autosave_period", _autosavePeriodPopUp->getSelectedTag(), _domain);
+		Common::Platform platform = (Common::Platform)_platformPopUp->getSelectedTag();
+		if (platform < 0)
+			ConfMan.removeKey("platform", _domain);
+		else
+			ConfMan.set("platform", Common::getPlatformCode(platform), _domain);
 
-		GUI::ThemeEngine::GraphicsMode selected = (GUI::ThemeEngine::GraphicsMode)_rendererPopUp->getSelectedTag();
-		const char *cfg = GUI::ThemeEngine::findModeConfigName(selected);
-		if (!ConfMan.get("gui_renderer").equalsIgnoreCase(cfg)) {
-			// FIXME: Actually, any changes (including the theme change) should
-			// only become active *after* the options dialog has closed.
-			g_gui.loadNewTheme(g_gui.theme()->getThemeId(), selected);
-			ConfMan.set("gui_renderer", cfg, _domain);
+		// Set the state of engine-specific checkboxes
+		for (uint i = 0; i < _engineOptions.size(); i++) {
+			ConfMan.setBool(_engineOptions[i].configOption, _engineCheckboxes[i]->getState(), _domain);
 		}
-#ifdef USE_TRANSLATION
-		Common::String oldLang = ConfMan.get("gui_language");
-		int selLang = _guiLanguagePopUp->getSelectedTag();
-
-		ConfMan.set("gui_language", TransMan.getLangById(selLang));
-
-		Common::String newLang = ConfMan.get("gui_language").c_str();
-		if (newLang != oldLang) {
-#if 0
-			// Activate the selected language
-			TransMan.setLanguage(selLang);
-
-			// FIXME: Actually, any changes (including the theme change) should
-			// only become active *after* the options dialog has closed.
-			g_gui.loadNewTheme(g_gui.theme()->getThemeId(), ThemeEngine::kGfxDisabled, true);
-#else
-			MessageDialog error(_("You have to restart ScummVM before your changes will take effect."));
-			error.runModal();
-#endif
-		}
-#endif // USE_TRANSLATION
-
 	}
 	OptionsDialog::close();
 }
 
-void GlobalOptionsDialog::handleCommand(CommandSender *sender, uint32 cmd, uint32 data) {
+void EditGameDialog::handleCommand(CommandSender *sender, uint32 cmd, uint32 data) {
 	switch (cmd) {
-	case kChooseSaveDirCmd: {
-		BrowserDialog browser(_("Select directory for savegames"), true);
-		if (browser.runModal() > 0) {
-			// User made his choice...
-			Common::FSNode dir(browser.getResult());
-			if (dir.isWritable()) {
-				_savePath->setLabel(dir.getPath());
-			} else {
-				MessageDialog error(_("The chosen directory cannot be written to. Please select another one."));
-				error.runModal();
-				return;
-			}
-			draw();
-		}
+	case kCmdGlobalGraphicsOverride:
+		setGraphicSettingsState(data != 0);
+		draw();
 		break;
-	}
-	case kChooseThemeDirCmd: {
-		BrowserDialog browser(_("Select directory for GUI themes"), true);
-		if (browser.runModal() > 0) {
-			// User made his choice...
-			Common::FSNode dir(browser.getResult());
-			_themePath->setLabel(dir.getPath());
-			draw();
-		}
+	case kCmdGlobalAudioOverride:
+		setAudioSettingsState(data != 0);
+		setSubtitleSettingsState(data != 0);
+		if (_globalVolumeOverride == NULL)
+			setVolumeSettingsState(data != 0);
+		draw();
 		break;
-	}
-	case kChooseExtraDirCmd: {
-		BrowserDialog browser(_("Select directory for extra files"), true);
-		if (browser.runModal() > 0) {
-			// User made his choice...
-			Common::FSNode dir(browser.getResult());
-			_extraPath->setLabel(dir.getPath());
-			draw();
-		}
+	case kCmdGlobalMIDIOverride:
+		setMIDISettingsState(data != 0);
+		draw();
 		break;
-	}
-#ifdef DYNAMIC_MODULES
-	case kChoosePluginsDirCmd: {
-		BrowserDialog browser(_("Select directory for plugins"), true);
-		if (browser.runModal() > 0) {
-			// User made his choice...
-			Common::FSNode dir(browser.getResult());
-			_pluginsPath->setLabel(dir.getPath());
-			draw();
-		}
+	case kCmdGlobalAdLibOverride:
+		setAdLibSettingsState(data != 0);
+		draw();
 		break;
-	}
-#endif
-	case kThemePathClearCmd:
-		_themePath->setLabel(_c("None", "path"));
+	case kCmdGlobalVolumeOverride:
+		setVolumeSettingsState(data != 0);
+		draw();
 		break;
-	case kExtraPathClearCmd:
-		_extraPath->setLabel(_c("None", "path"));
-		break;
-	case kSavePathClearCmd:
-		_savePath->setLabel(_("Default"));
-		break;
-	case kChooseSoundFontCmd: {
+	case kCmdChooseSoundFontCmd: {
 		BrowserDialog browser(_("Select SoundFont"), false);
+
 		if (browser.runModal() > 0) {
-			// User made his choice...
+			// User made this choice...
 			Common::FSNode file(browser.getResult());
 			_soundFont->setLabel(file.getPath());
 
@@ -1441,86 +517,673 @@ void GlobalOptionsDialog::handleCommand(CommandSender *sender, uint32 cmd, uint3
 		}
 		break;
 	}
-	case kChooseThemeCmd: {
-		ThemeBrowser browser;
+
+	// Change path for the game
+	case kCmdGameBrowser: {
+		BrowserDialog browser(_("Select directory with game data"), true);
 		if (browser.runModal() > 0) {
 			// User made his choice...
-			Common::String theme = browser.getSelected();
-			// FIXME: Actually, any changes (including the theme change) should
-			// only become active *after* the options dialog has closed.
-#ifdef USE_TRANSLATION
-			Common::String lang = TransMan.getCurrentLanguage();
-#endif
-			if (g_gui.loadNewTheme(theme)) {
-#ifdef USE_TRANSLATION
-				// If the charset has changed, it means the font were not found for the
-				// new theme. Since for the moment we do not support change of translation
-				// language without restarting, we let the user know about this.
-				if (lang != TransMan.getCurrentLanguage()) {
-					TransMan.setLanguage(lang.c_str());
-					g_gui.loadNewTheme(_oldTheme);
-					MessageDialog error(_("The theme you selected does not support your current language. If you want to use this theme you need to switch to another language first."));
-					error.runModal();
-				} else {
-#endif
-					_curTheme->setLabel(g_gui.theme()->getThemeName());
-					ConfMan.set("gui_theme", theme);
-#ifdef USE_TRANSLATION
-				}
-#endif
-			}
+			Common::FSNode dir(browser.getResult());
+
+			// TODO: Verify the game can be found in the new directory... Best
+			// done with optional specific gameid to pluginmgr detectgames?
+			// FSList files = dir.listDir(FSNode::kListFilesOnly);
+
+			_gamePathWidget->setLabel(dir.getPath());
 			draw();
 		}
+		draw();
 		break;
 	}
-#ifdef SMALL_SCREEN_DEVICE
-	case kChooseKeyMappingCmd:
-		_keysDialog->runModal();
+
+	// Change path for extra game data (eg, using sword cutscenes when playing via CD)
+	case kCmdExtraBrowser: {
+		BrowserDialog browser(_("Select additional game directory"), true);
+		if (browser.runModal() > 0) {
+			// User made his choice...
+			Common::FSNode dir(browser.getResult());
+			_extraPathWidget->setLabel(dir.getPath());
+			draw();
+		}
+		draw();
 		break;
-#endif
-#ifdef USE_FLUIDSYNTH
-	case kFluidSynthSettingsCmd:
-		_fluidSynthSettingsDialog->runModal();
+	}
+	// Change path for stored save game (perm and temp) data
+	case kCmdSaveBrowser: {
+		BrowserDialog browser(_("Select directory for saved games"), true);
+		if (browser.runModal() > 0) {
+			// User made his choice...
+			Common::FSNode dir(browser.getResult());
+			_savePathWidget->setLabel(dir.getPath());
+			draw();
+		}
+		draw();
 		break;
-#endif
+	}
+
+	case kCmdExtraPathClear:
+		_extraPathWidget->setLabel(_c("None", "path"));
+		break;
+
+	case kCmdSavePathClear:
+		_savePathWidget->setLabel(_("Default"));
+		break;
+
+	case kOKCmd: {
+		// Write back changes made to config object
+		String newDomain(_domainWidget->getEditString());
+		if (newDomain != _domain) {
+			if (newDomain.empty()
+				|| newDomain.hasPrefix("_")
+				|| newDomain == ConfigManager::kApplicationDomain
+				|| ConfMan.hasGameDomain(newDomain)) {
+				MessageDialog alert(_("This game ID is already taken. Please choose another one."));
+				alert.runModal();
+				return;
+			}
+			ConfMan.renameGameDomain(_domain, newDomain);
+			_domain = newDomain;
+		}
+		}
+		// FALL THROUGH to default case
 	default:
 		OptionsDialog::handleCommand(sender, cmd, data);
 	}
 }
 
-void GlobalOptionsDialog::reflowLayout() {
-	int activeTab = _tabWidget->getActiveTab();
+#pragma mark -
 
-	if (_midiTabId != -1) {
-		_tabWidget->setActiveTab(_midiTabId);
+LauncherDialog::LauncherDialog()
+	: Dialog(0, 0, 320, 200) {
+	_backgroundType = GUI::ThemeEngine::kDialogBackgroundMain;
 
-		_tabWidget->removeWidget(_soundFontClearButton);
-		_soundFontClearButton->setNext(0);
-		delete _soundFontClearButton;
-		_soundFontClearButton = addClearButton(_tabWidget, "GlobalOptions_MIDI.mcFontClearButton", kClearSoundFontCmd);
+	const int screenW = g_system->getOverlayWidth();
+	const int screenH = g_system->getOverlayHeight();
+
+	_w = screenW;
+	_h = screenH;
+
+#ifndef DISABLE_FANCY_THEMES
+	_logo = 0;
+	if (g_gui.xmlEval()->getVar("Globals.ShowLauncherLogo") == 1 && g_gui.theme()->supportsImages()) {
+		_logo = new GraphicsWidget(this, "Launcher.Logo");
+		_logo->useThemeTransparency(true);
+		_logo->setGfx(g_gui.theme()->getImageSurface(ThemeEngine::kImageLogo));
+
+		new StaticTextWidget(this, "Launcher.Version", gScummVMVersionDate);
+	} else
+		new StaticTextWidget(this, "Launcher.Version", gScummVMFullVersion);
+#else
+	// Show ScummVM version
+	new StaticTextWidget(this, "Launcher.Version", gScummVMFullVersion);
+#endif
+
+	new ButtonWidget(this, "Launcher.QuitButton", _("~Q~uit"), _("Quit ScummVM"), kQuitCmd);
+	new ButtonWidget(this, "Launcher.AboutButton", _("A~b~out..."), _("About ScummVM"), kAboutCmd);
+	new ButtonWidget(this, "Launcher.OptionsButton", _("~O~ptions..."), _("Change global ScummVM options"), kOptionsCmd);
+	_startButton =
+		new ButtonWidget(this, "Launcher.StartButton", _("~S~tart"), _("Start selected game"), kStartCmd);
+
+	_loadButton =
+		new ButtonWidget(this, "Launcher.LoadGameButton", _("~L~oad..."), _("Load savegame for selected game"), kLoadGameCmd);
+
+	// Above the lowest button rows: two more buttons (directly below the list box)
+	if (g_system->getOverlayWidth() > 320) {
+		_addButton =
+			new ButtonWidget(this, "Launcher.AddGameButton", _("~A~dd Game..."), _("Hold Shift for Mass Add"), kAddGameCmd);
+		_editButton =
+			new ButtonWidget(this, "Launcher.EditGameButton", _("~E~dit Game..."), _("Change game options"), kEditGameCmd);
+		_removeButton =
+			new ButtonWidget(this, "Launcher.RemoveGameButton", _("~R~emove Game"), _("Remove game from the list. The game data files stay intact"), kRemoveGameCmd);
+	} else {
+		_addButton =
+		new ButtonWidget(this, "Launcher.AddGameButton", _c("~A~dd Game...", "lowres"), _("Hold Shift for Mass Add"), kAddGameCmd);
+		_editButton =
+		new ButtonWidget(this, "Launcher.EditGameButton", _c("~E~dit Game...", "lowres"), _("Change game options"), kEditGameCmd);
+		_removeButton =
+		new ButtonWidget(this, "Launcher.RemoveGameButton", _c("~R~emove Game", "lowres"), _("Remove game from the list. The game data files stay intact"), kRemoveGameCmd);
 	}
 
-	if (_pathsTabId != -1) {
-		_tabWidget->setActiveTab(_pathsTabId);
+	// Search box
+	_searchDesc = 0;
+#ifndef DISABLE_FANCY_THEMES
+	_searchPic = 0;
+	if (g_gui.xmlEval()->getVar("Globals.ShowSearchPic") == 1 && g_gui.theme()->supportsImages()) {
+		_searchPic = new GraphicsWidget(this, "Launcher.SearchPic", _("Search in game list"));
+		_searchPic->setGfx(g_gui.theme()->getImageSurface(ThemeEngine::kImageSearch));
+	} else
+#endif
+		_searchDesc = new StaticTextWidget(this, "Launcher.SearchDesc", _("Search:"));
 
-		_tabWidget->removeWidget(_savePathClearButton);
-		_savePathClearButton->setNext(0);
-		delete _savePathClearButton;
-		_savePathClearButton = addClearButton(_tabWidget, "GlobalOptions_Paths.SavePathClearButton", kSavePathClearCmd);
+	_searchWidget = new EditTextWidget(this, "Launcher.Search", _search, 0, kSearchCmd);
+	_searchClearButton = addClearButton(this, "Launcher.SearchClearButton", kSearchClearCmd);
 
-		_tabWidget->removeWidget(_themePathClearButton);
-		_themePathClearButton->setNext(0);
-		delete _themePathClearButton;
-		_themePathClearButton = addClearButton(_tabWidget, "GlobalOptions_Paths.ThemePathClearButton", kThemePathClearCmd);
+	// Add list with game titles
+	_list = new ListWidget(this, "Launcher.GameList", 0, kListSearchCmd);
+	_list->setEditable(false);
+	_list->setNumberingMode(kListNumberingOff);
 
-		_tabWidget->removeWidget(_extraPathClearButton);
-		_extraPathClearButton->setNext(0);
-		delete _extraPathClearButton;
-		_extraPathClearButton = addClearButton(_tabWidget, "GlobalOptions_Paths.ExtraPathClearButton", kExtraPathClearCmd);
+	// Populate the list
+	updateListing();
+
+	// Restore last selection
+	String last(ConfMan.get("lastselectedgame", ConfigManager::kApplicationDomain));
+	selectTarget(last);
+
+	// En-/disable the buttons depending on the list selection
+	updateButtons();
+
+	// Create file browser dialog
+	_browser = new BrowserDialog(_("Select directory with game data"), true);
+
+	// Create Load dialog
+	_loadDialog = new SaveLoadChooser(_("Load game:"), _("Load"), false);
+}
+
+void LauncherDialog::selectTarget(const String &target) {
+	if (!target.empty()) {
+		int itemToSelect = 0;
+		StringArray::const_iterator iter;
+		for (iter = _domains.begin(); iter != _domains.end(); ++iter, ++itemToSelect) {
+			if (target == *iter) {
+				_list->setSelected(itemToSelect);
+				break;
+			}
+		}
+	}
+}
+
+LauncherDialog::~LauncherDialog() {
+	delete _browser;
+	delete _loadDialog;
+}
+
+void LauncherDialog::open() {
+	// Clear the active domain, in case we return to the dialog from a
+	// failure to launch a game. Otherwise, pressing ESC will attempt to
+	// re-launch the same game again.
+	ConfMan.setActiveDomain("");
+
+	CursorMan.popAllCursors();
+	Dialog::open();
+
+	updateButtons();
+}
+
+void LauncherDialog::close() {
+	// Save last selection
+	const int sel = _list->getSelected();
+	if (sel >= 0)
+		ConfMan.set("lastselectedgame", _domains[sel], ConfigManager::kApplicationDomain);
+	else
+		ConfMan.removeKey("lastselectedgame", ConfigManager::kApplicationDomain);
+
+	ConfMan.flushToDisk();
+	Dialog::close();
+}
+
+void LauncherDialog::updateListing() {
+	StringArray l;
+
+	// Retrieve a list of all games defined in the config file
+	_domains.clear();
+	const ConfigManager::DomainMap &domains = ConfMan.getGameDomains();
+	ConfigManager::DomainMap::const_iterator iter;
+	for (iter = domains.begin(); iter != domains.end(); ++iter) {
+#ifdef __DS__
+		// DS port uses an extra section called 'ds'.  This prevents the section from being
+		// detected as a game.
+		if (iter->_key == "ds") {
+			continue;
+		}
+#endif
+
+		String gameid(iter->_value.getVal("gameid"));
+		String description(iter->_value.getVal("description"));
+
+		if (gameid.empty())
+			gameid = iter->_key;
+		if (description.empty()) {
+			GameDescriptor g = EngineMan.findGame(gameid);
+			if (g.contains("description"))
+				description = g.description();
+		}
+
+		if (description.empty()) {
+			description = Common::String::format("Unknown (target %s, gameid %s)", iter->_key.c_str(), gameid.c_str());
+		}
+
+		if (!gameid.empty() && !description.empty()) {
+			// Insert the game into the launcher list
+			int pos = 0, size = l.size();
+
+			while (pos < size && (scumm_stricmp(description.c_str(), l[pos].c_str()) > 0))
+				pos++;
+			l.insert_at(pos, description);
+			_domains.insert_at(pos, iter->_key);
+		}
 	}
 
-	_tabWidget->setActiveTab(activeTab);
-	OptionsDialog::reflowLayout();
+	const int oldSel = _list->getSelected();
+	_list->setList(l);
+	if (oldSel < (int)l.size())
+		_list->setSelected(oldSel);	// Restore the old selection
+	else if (oldSel != -1)
+		// Select the last entry if the list has been reduced
+		_list->setSelected(_list->getList().size() - 1);
+	updateButtons();
+
+	// Update the filter settings, those are lost when "setList"
+	// is called.
+	_list->setFilter(_searchWidget->getEditString());
+}
+
+void LauncherDialog::addGame() {
+	int modifiers = g_system->getEventManager()->getModifierState();
+
+#ifndef DISABLE_MASS_ADD
+	const bool massAdd = (modifiers & Common::KBD_SHIFT) != 0;
+
+	if (massAdd) {
+		MessageDialog alert(_("Do you really want to run the mass game detector? "
+							  "This could potentially add a huge number of games."), _("Yes"), _("No"));
+		if (alert.runModal() == GUI::kMessageOK && _browser->runModal() > 0) {
+			MassAddDialog massAddDlg(_browser->getResult());
+
+			massAddDlg.runModal();
+
+			// Update the ListWidget and force a redraw
+
+			// If new target(s) were added, update the ListWidget and move
+			// the selection to to first newly detected game.
+			Common::String newTarget = massAddDlg.getFirstAddedTarget();
+			if (!newTarget.empty()) {
+				updateListing();
+				selectTarget(newTarget);
+			}
+
+			draw();
+		}
+
+		// We need to update the buttons here, so "Mass add" will revert to "Add game"
+		// without any additional event.
+		updateButtons();
+		return;
+	}
+#endif
+
+	// Allow user to add a new game to the list.
+	// 1) show a dir selection dialog which lets the user pick the directory
+	//    the game data resides in.
+	// 2) try to auto detect which game is in the directory, if we cannot
+	//    determine it uniquely present a list of candidates to the user
+	//    to pick from
+	// 3) Display the 'Edit' dialog for that item, letting the user specify
+	//    an alternate description (to distinguish multiple versions of the
+	//    game, e.g. 'Monkey German' and 'Monkey English') and set default
+	//    options for that game
+	// 4) If no game is found in the specified directory, return to the
+	//    dialog.
+
+	bool looping;
+	do {
+		looping = false;
+
+		if (_browser->runModal() > 0) {
+			// User made his choice...
+			Common::FSNode dir(_browser->getResult());
+			Common::FSList files;
+			if (!dir.getChildren(files, Common::FSNode::kListAll)) {
+				MessageDialog alert(_("ScummVM couldn't open the specified directory!"));
+				alert.runModal();
+				return;
+			}
+
+			// ...so let's determine a list of candidates, games that
+			// could be contained in the specified directory.
+			GameList candidates(EngineMan.detectGames(files));
+
+			int idx;
+			if (candidates.empty()) {
+				// No game was found in the specified directory
+				MessageDialog alert(_("ScummVM could not find any game in the specified directory!"));
+				alert.runModal();
+				idx = -1;
+
+				looping = true;
+			} else if (candidates.size() == 1) {
+				// Exact match
+				idx = 0;
+			} else {
+				// Display the candidates to the user and let her/him pick one
+				StringArray list;
+				for (idx = 0; idx < (int)candidates.size(); idx++)
+					list.push_back(candidates[idx].description());
+
+				ChooserDialog dialog(_("Pick the game:"));
+				dialog.setList(list);
+				idx = dialog.runModal();
+			}
+			if (0 <= idx && idx < (int)candidates.size()) {
+				GameDescriptor result = candidates[idx];
+
+				// TODO: Change the detectors to set "path" !
+				result["path"] = dir.getPath();
+
+				Common::String domain = addGameToConf(result);
+
+				// Display edit dialog for the new entry
+				EditGameDialog editDialog(domain, result.description());
+				if (editDialog.runModal() > 0) {
+					// User pressed OK, so make changes permanent
+
+					// Write config to disk
+					ConfMan.flushToDisk();
+
+					// Update the ListWidget, select the new item, and force a redraw
+					updateListing();
+					selectTarget(editDialog.getDomain());
+					draw();
+				} else {
+					// User aborted, remove the the new domain again
+					ConfMan.removeGameDomain(domain);
+				}
+
+			}
+		}
+	} while (looping);
+}
+
+Common::String addGameToConf(const GameDescriptor &result) {
+	// The auto detector or the user made a choice.
+	// Pick a domain name which does not yet exist (after all, we
+	// are *adding* a game to the config, not replacing).
+	Common::String domain = result.preferredtarget();
+
+	assert(!domain.empty());
+	if (ConfMan.hasGameDomain(domain)) {
+		int suffixN = 1;
+		Common::String gameid(domain);
+
+		while (ConfMan.hasGameDomain(domain)) {
+			domain = gameid + Common::String::format("-%d", suffixN);
+			suffixN++;
+		}
+	}
+
+	// Add the name domain
+	ConfMan.addGameDomain(domain);
+
+	// Copy all non-empty key/value pairs into the new domain
+	for (GameDescriptor::const_iterator iter = result.begin(); iter != result.end(); ++iter) {
+		if (!iter->_value.empty() && iter->_key != "preferredtarget")
+			ConfMan.set(iter->_key, iter->_value, domain);
+	}
+
+	// TODO: Setting the description field here has the drawback
+	// that the user does never notice when we upgrade our descriptions.
+	// It might be nice ot leave this field empty, and only set it to
+	// a value when the user edits the description string.
+	// However, at this point, that's impractical. Once we have a method
+	// to query all backends for the proper & full description of a given
+	// game target, we can change this (currently, you can only query
+	// for the generic gameid description; it's not possible to obtain
+	// a description which contains extended information like language, etc.).
+
+	return domain;
+}
+
+void LauncherDialog::removeGame(int item) {
+	MessageDialog alert(_("Do you really want to remove this game configuration?"), _("Yes"), _("No"));
+
+	if (alert.runModal() == GUI::kMessageOK) {
+		// Remove the currently selected game from the list
+		assert(item >= 0);
+		ConfMan.removeGameDomain(_domains[item]);
+
+		// Write config to disk
+		ConfMan.flushToDisk();
+
+		// Update the ListWidget and force a redraw
+		updateListing();
+		draw();
+	}
+}
+
+void LauncherDialog::editGame(int item) {
+	// Set game specific options. Most of these should be "optional", i.e. by
+	// default set nothing and use the global ScummVM settings. E.g. the user
+	// can set here an optional alternate music volume, or for specific games
+	// a different music driver etc.
+	// This is useful because e.g. MonkeyVGA needs AdLib music to have decent
+	// music support etc.
+	assert(item >= 0);
+	String gameId(ConfMan.get("gameid", _domains[item]));
+	if (gameId.empty())
+		gameId = _domains[item];
+	EditGameDialog editDialog(_domains[item], EngineMan.findGame(gameId).description());
+	if (editDialog.runModal() > 0) {
+		// User pressed OK, so make changes permanent
+
+		// Write config to disk
+		ConfMan.flushToDisk();
+
+		// Update the ListWidget, reselect the edited game and force a redraw
+		updateListing();
+		selectTarget(editDialog.getDomain());
+		draw();
+	}
+}
+
+void LauncherDialog::loadGame(int item) {
+	String gameId = ConfMan.get("gameid", _domains[item]);
+	if (gameId.empty())
+		gameId = _domains[item];
+
+	const EnginePlugin *plugin = 0;
+
+	EngineMan.findGame(gameId, &plugin);
+
+	String target = _domains[item];
+	target.toLowercase();
+
+	if (plugin) {
+		if ((*plugin)->hasFeature(MetaEngine::kSupportsListSaves) &&
+			(*plugin)->hasFeature(MetaEngine::kSupportsLoadingDuringStartup)) {
+			int slot = _loadDialog->runModalWithPluginAndTarget(plugin, target);
+			if (slot >= 0) {
+				ConfMan.setActiveDomain(_domains[item]);
+				ConfMan.setInt("save_slot", slot, Common::ConfigManager::kTransientDomain);
+				close();
+			}
+		} else {
+			MessageDialog dialog
+				(_("This game does not support loading games from the launcher."), _("OK"));
+			dialog.runModal();
+		}
+	} else {
+		MessageDialog dialog(_("ScummVM could not find any engine capable of running the selected game!"), _("OK"));
+		dialog.runModal();
+	}
+}
+
+void LauncherDialog::handleKeyDown(Common::KeyState state) {
+	if (state.keycode == Common::KEYCODE_TAB) {
+		// Toggle between the game list and the quick search field.
+		if (getFocusWidget() == _searchWidget) {
+			setFocusWidget(_list);
+		} else if (getFocusWidget() == _list) {
+			setFocusWidget(_searchWidget);
+		}
+	}
+	Dialog::handleKeyDown(state);
+	updateButtons();
+}
+
+void LauncherDialog::handleKeyUp(Common::KeyState state) {
+	Dialog::handleKeyUp(state);
+	updateButtons();
+}
+
+void LauncherDialog::handleCommand(CommandSender *sender, uint32 cmd, uint32 data) {
+	int item = _list->getSelected();
+
+	switch (cmd) {
+	case kAddGameCmd:
+		addGame();
+		break;
+	case kRemoveGameCmd:
+		removeGame(item);
+		break;
+	case kEditGameCmd:
+		editGame(item);
+		break;
+	case kLoadGameCmd:
+		loadGame(item);
+		break;
+	case kOptionsCmd: {
+		GlobalOptionsDialog options;
+		options.runModal();
+		}
+		break;
+	case kAboutCmd: {
+		AboutDialog about;
+		about.runModal();
+		}
+		break;
+	case kStartCmd:
+	case kListItemActivatedCmd:
+	case kListItemDoubleClickedCmd:
+		// Start the selected game.
+		assert(item >= 0);
+		ConfMan.setActiveDomain(_domains[item]);
+		close();
+		break;
+	case kListItemRemovalRequestCmd:
+		removeGame(item);
+		break;
+	case kListSelectionChangedCmd:
+		updateButtons();
+		break;
+	case kQuitCmd:
+		ConfMan.setActiveDomain("");
+		setResult(-1);
+		close();
+		break;
+	case kSearchCmd:
+		// Update the active search filter.
+		_list->setFilter(_searchWidget->getEditString());
+		break;
+	case kSearchClearCmd:
+		// Reset the active search filter, thus showing all games again
+		_searchWidget->setEditString("");
+		_list->setFilter("");
+		break;
+	default:
+		Dialog::handleCommand(sender, cmd, data);
+	}
+}
+
+void LauncherDialog::updateButtons() {
+	bool enable = (_list->getSelected() >= 0);
+	if (enable != _startButton->isEnabled()) {
+		_startButton->setEnabled(enable);
+		_startButton->draw();
+	}
+	if (enable != _editButton->isEnabled()) {
+		_editButton->setEnabled(enable);
+		_editButton->draw();
+	}
+	if (enable != _removeButton->isEnabled()) {
+		_removeButton->setEnabled(enable);
+		_removeButton->draw();
+	}
+
+	int item = _list->getSelected();
+	bool en = enable;
+
+	if (item >= 0)
+		en = !(Common::checkGameGUIOption(GUIO_NOLAUNCHLOAD, ConfMan.get("guioptions", _domains[item])));
+
+	if (en != _loadButton->isEnabled()) {
+		_loadButton->setEnabled(en);
+		_loadButton->draw();
+	}
+
+	// Update the label of the "Add" button depending on whether shift is pressed or not
+	int modifiers = g_system->getEventManager()->getModifierState();
+	const bool massAdd = (modifiers & Common::KBD_SHIFT) != 0;
+	const bool lowRes = g_system->getOverlayWidth() <= 320;
+
+	const char *newAddButtonLabel = massAdd
+		? (lowRes ? _c("Mass Add...", "lowres") : _("Mass Add..."))
+		: (lowRes ? _c("~A~dd Game...", "lowres") : _("~A~dd Game..."));
+
+	if (_addButton->getLabel() != newAddButtonLabel)
+		_addButton->setLabel(newAddButtonLabel);
+}
+
+void LauncherDialog::reflowLayout() {
+#ifndef DISABLE_FANCY_THEMES
+	if (g_gui.xmlEval()->getVar("Globals.ShowLauncherLogo") == 1 && g_gui.theme()->supportsImages()) {
+		StaticTextWidget *ver = (StaticTextWidget *)findWidget("Launcher.Version");
+		if (ver) {
+			ver->setAlign(g_gui.xmlEval()->getWidgetTextHAlign("Launcher.Version"));
+			ver->setLabel(gScummVMVersionDate);
+		}
+
+		if (!_logo)
+			_logo = new GraphicsWidget(this, "Launcher.Logo");
+		_logo->useThemeTransparency(true);
+		_logo->setGfx(g_gui.theme()->getImageSurface(ThemeEngine::kImageLogo));
+	} else {
+		StaticTextWidget *ver = (StaticTextWidget *)findWidget("Launcher.Version");
+		if (ver) {
+			ver->setAlign(g_gui.xmlEval()->getWidgetTextHAlign("Launcher.Version"));
+			ver->setLabel(gScummVMFullVersion);
+		}
+
+		if (_logo) {
+			removeWidget(_logo);
+			_logo->setNext(0);
+			delete _logo;
+			_logo = 0;
+		}
+	}
+
+	if (g_gui.xmlEval()->getVar("Globals.ShowSearchPic") == 1 && g_gui.theme()->supportsImages()) {
+		if (!_searchPic)
+			_searchPic = new GraphicsWidget(this, "Launcher.SearchPic");
+		_searchPic->setGfx(g_gui.theme()->getImageSurface(ThemeEngine::kImageSearch));
+
+		if (_searchDesc) {
+			removeWidget(_searchDesc);
+			_searchDesc->setNext(0);
+			delete _searchDesc;
+			_searchDesc = 0;
+		}
+	} else {
+		if (!_searchDesc)
+			_searchDesc = new StaticTextWidget(this, "Launcher.SearchDesc", _("Search:"));
+
+		if (_searchPic) {
+			removeWidget(_searchPic);
+			_searchPic->setNext(0);
+			delete _searchPic;
+			_searchPic = 0;
+		}
+	}
+
+	removeWidget(_searchClearButton);
+	_searchClearButton->setNext(0);
+	delete _searchClearButton;
+	_searchClearButton = addClearButton(this, "Launcher.SearchClearButton", kSearchClearCmd);
+#endif
+
+	_w = g_system->getOverlayWidth();
+	_h = g_system->getOverlayHeight();
+
+	Dialog::reflowLayout();
 }
 
 } // End of namespace GUI

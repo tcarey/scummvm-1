@@ -470,7 +470,7 @@ void OptionsDialog::close() {
 			if (_enableMIDISettings) {
 				saveMusicDeviceSetting(_mt32DevicePopUp, "mt32_device");
 				
-				if (_mt32DevicePopUp->getSelectedTag() = 0)
+				if (_mt32DevicePopUp->getSelectedTag() == 0)
 					ConfMan.setBool("native_mt32", false, _domain);
 				else
 					ConfMan.setBool("native_mt32", true, _domain);

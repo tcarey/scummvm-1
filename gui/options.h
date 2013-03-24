@@ -77,7 +77,7 @@ protected:
 	void addGraphicControls(GuiObject *boss, const Common::String &prefix);
 	void addAudioControls(GuiObject *boss, const Common::String &prefix);
 	void addMIDIControls(GuiObject *boss, const Common::String &prefix);
-	void addMT32Controls(GuiObject *boss, const Common::String &prefix);
+	void addAdLibControls(GuiObject *boss, const Common::String &prefix);
 	void addVolumeControls(GuiObject *boss, const Common::String &prefix);
 	// The default value is the launcher's non-scaled talkspeed value. When SCUMM uses the widget,
 	// it uses its own scale
@@ -87,7 +87,7 @@ protected:
 	void setGraphicSettingsState(bool enabled);
 	void setAudioSettingsState(bool enabled);
 	void setMIDISettingsState(bool enabled);
-	void setMT32SettingsState(bool enabled);
+	void setAdLibSettingsState(bool enabled);
 	void setVolumeSettingsState(bool enabled);
 	void setSubtitleSettingsState(bool enabled);
 
@@ -117,31 +117,29 @@ private:
 	bool _enableAudioSettings;
 	StaticTextWidget *_midiPopUpDesc;
 	PopUpWidget *_midiPopUp;
-	StaticTextWidget *_oplPopUpDesc;
-	PopUpWidget *_oplPopUp;
 	StaticTextWidget *_outputRatePopUpDesc;
 	PopUpWidget *_outputRatePopUp;
-
-	StaticTextWidget *_mt32DevicePopUpDesc;
-	PopUpWidget *_mt32DevicePopUp;
-	StaticTextWidget *_gmDevicePopUpDesc;
-	PopUpWidget *_gmDevicePopUp;
 
 	//
 	// MIDI controls
 	//
 	bool _enableMIDISettings;
-	CheckboxWidget *_multiMidiCheckbox;
+	StaticTextWidget *_gmDevicePopUpDesc;
+	PopUpWidget *_gmDevicePopUp;
+	StaticTextWidget *_mt32DevicePopUpDesc;
+	PopUpWidget *_mt32DevicePopUp;
+	CheckboxWidget *_enableGSCheckbox;
 	StaticTextWidget *_midiGainDesc;
 	SliderWidget *_midiGainSlider;
 	StaticTextWidget *_midiGainLabel;
 
 	//
-	// MT-32 controls
+	// AdLib controls
 	//
-	bool _enableMT32Settings;
-	CheckboxWidget *_mt32Checkbox;
-	CheckboxWidget *_enableGSCheckbox;
+	bool _enableAdLibSettings;
+	StaticTextWidget *_oplPopUpDesc;
+	PopUpWidget *_oplPopUp;
+	CheckboxWidget *_multiMidiCheckbox;
 
 	//
 	// Subtitle controls
